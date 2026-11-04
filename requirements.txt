@@ -5,3 +5,4 @@ plotly
 biopython
 scipy
 openpyxl
+xlsxwriter
