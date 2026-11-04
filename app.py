@@ -22,8 +22,53 @@ try:
 except ImportError:
     def analisar_impacto_regulatorio(*args, **kwargs): return [], []
     def mapear_motivos_nativos_referencia(*args, **kwargs): return []
+        
 
 st.set_page_config(page_title="Bioinfo Promoter Analyzer Pro", layout="wide")
+
+# ==============================================================================
+# SISTEMA DE AUTENTICAÇÃO / PASSWORD PROTECTION
+# ==============================================================================
+def verificar_password():
+    """Retorna True se o utilizador introduzir a password correta."""
+    def password_inserida():
+        if st.session_state["password"] == "Bioinfo2026": # <-- MUDA A TUA PASSWORD AQUI
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Limpar por segurança
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.markdown("<h2 style='text-align: center;'>🔒 Acesso Restrito / Restricted Access</h2>", unsafe_allow_html=True)
+        st.text_input(
+            "Insira a password / Enter password:", 
+            type="password", 
+            on_change=password_inserida, 
+            key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        st.markdown("<h2 style='text-align: center;'>🔒 Acesso Restrito / Restricted Access</h2>", unsafe_allow_html=True)
+        st.text_input(
+            "Insira a password / Enter password:", 
+            type="password", 
+            on_change=password_inserida, 
+            key="password"
+        )
+        st.error("❌ Password incorreta. / Incorrect password.")
+        return False
+    return True
+
+if not verificar_password():
+    st.stop() # Bloqueia a execução do resto do código
+
+# ==============================================================================
+# SISTEMA DE INTERNACIONALIZAÇÃO (i18n)
+# ==============================================================================
+if 'lang' not in st.session_state:
+    st.session_state['lang'] = 'PT'
+
+# ... [resto do teu código continua igual a partir daqui] ...
 
 # ==============================================================================
 # SISTEMA DE INTERNACIONALIZAÇÃO (i18n)
