@@ -2,35 +2,6 @@
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](http://mabudo.divasecret.co.mz)
 
-**Bioinfo Promoter Analyser Pro** é uma ferramenta de visualização de dados microbiológicos e análise computacional, focada no mapeamento físico de promotores genómicos, avaliação de impacto mutacional e análise fenotípica de isolados clínicos (ex: *Candida glabrata*).
-
-*(Scroll down for English version).*
-
----
-
-## 🇵🇹 Versão em Português
-
-A aplicação permite o cruzamento massivo de perfis mutacionais (VCFs) com genomas de referência (FASTA/GFF) para identificar perdas e ganhos de função nos locais de ligação de Fatores de Transcrição (TFs), calculando a significância estatística de resistência associada a fármacos como o Fluconazol.
-
-### 🌐 Acesso à Aplicação
-A ferramenta está alojada na nuvem e pode ser acedida através do domínio clínico:
-**[http://mabudo.divasecret.co.mz](http://mabudo.divasecret.co.mz)**
-
-*(Nota: A aplicação encontra-se atualmente em fase de desenvolvimento e requer autenticação restrita).*
-
-### 🛠️ Como Utilizar
-A aplicação lê automaticamente o genoma de referência (`.fasta`) e as anotações (`.gff`) diretamente deste repositório GitHub. Para realizar análises customizadas, os investigadores devem interagir com a barra lateral da aplicação:
-1. **Ficheiro VCF Original:** Carregar o ficheiro de Variantes Clínicas (`.vcf` ou `.vcf.gz`). O sistema está otimizado (via processamento em *chunks* iterativos) para ler ficheiros maciços diretamente na RAM de forma eficiente.
-2. **Ficheiro de Metadados (Opcional, mas recomendado):** Carregar a matriz clínica (`.csv` ou `.xlsx`) contendo a coluna correspondente ao ID dos isolados e aos valores de resistência MIC50 (ex: Fluconazol).
-
-### ✨ Funcionalidades Principais
-* **Reguloma Pan & Core:** Identificação paramétrica se um determinado Fator de Transcrição regula um conjunto fixo de genes na população (Core Regulon) ou de forma variável (Accessory Regulon).
-* **Mutagénese in Silico:** Teste de disrupção de Footprints biológicos baseados nas evidências empíricas da base de dados YEASTRACT.
-* **Associação Estatística:** Cálculo automatizado do Teste Exato de Fisher, Qui-Quadrado, Teste T e Mann-Whitney para validação da correlação Genótipo-Fenótipo.
-
----
-
-## 🇬🇧 English Version
 
 **Bioinfo Promoter Analyser Pro** is a microbiological data visualization and computational analysis tool focused on the physical mapping of genomic promoters, evaluation of mutational impact, and phenotypic analysis of clinical isolates (e.g., *Candida glabrata*).
 
