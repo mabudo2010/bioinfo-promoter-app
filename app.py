@@ -423,27 +423,32 @@ def executar_mutagenese_in_silico(vcf_bytes, gff_bytes, caminho_fasta, prom_len)
             gene_coords[gene_id] = info
             promoters_by_chrom[chrom_norm].append(info)
 
-    # 3. Processar VCF para Haplótipos e FASTA WT
+    # 3. Processar VCF para Haplótipos e FASTA WT (OTIMIZADO COM STREAMING)
     if vcf_bytes.startswith(b"\x1f\x8b"):
-        vcf_str = gzip.decompress(vcf_bytes).decode('utf-8', errors="ignore")
+        vcf_stream = io.TextIOWrapper(gzip.GzipFile(fileobj=io.BytesIO(vcf_bytes)), encoding='utf-8', errors='ignore')
     else:
-        vcf_str = vcf_bytes.decode('utf-8', errors="ignore")
+        vcf_stream = io.TextIOWrapper(io.BytesIO(vcf_bytes), encoding='utf-8', errors='ignore')
 
     vcf_variants_by_gene = defaultdict(list)
-    vcf_lines = []
     amostras = []
-    for line in vcf_str.splitlines():
+    
+    for line in vcf_stream:
         if line.startswith("##"): continue
         if line.startswith("#CHROM"):
             parts = line.strip().split("\t")
             if len(parts) > 9: amostras = parts[9:]
             continue
-        vcf_lines.append(line)
-
-    for line in vcf_lines:
+        if line.startswith("#"): continue
+        
         parts = line.strip().split("\t")
+        if len(parts) < 8: continue
+        
         chrom_raw = parts[0]
-        pos_vcf = int(parts[1])
+        try:
+            pos_vcf = int(parts[1])
+        except ValueError:
+            continue
+            
         ref = parts[3]
         alts = parts[4].split(",")
         chrom_norm = normalizar_chrom(chrom_raw)
@@ -454,11 +459,12 @@ def executar_mutagenese_in_silico(vcf_bytes, gff_bytes, caminho_fasta, prom_len)
         alt_isolates = defaultdict(list)
         if len(parts) > 9 and amostras:
             for i, am in enumerate(amostras):
-                gt = parts[9+i].split(":")[0].replace("|", "/")
-                for alt_idx in range(len(alts)):
-                    if str(alt_idx+1) in gt.split("/"):
-                        alt_isolates[alt_idx].append(am)
-                        
+                if 9 + i < len(parts):
+                    gt = parts[9+i].split(":")[0].replace("|", "/")
+                    for alt_idx in range(len(alts)):
+                        if str(alt_idx+1) in gt.split("/"):
+                            alt_isolates[alt_idx].append(am)
+                            
         for p_info in promotores_candidatos:
             if p_info["Promotor_Start"] <= pos_vcf <= p_info["Promotor_End"]:
                 for alt_idx, alt in enumerate(alts):
@@ -529,7 +535,6 @@ def executar_mutagenese_in_silico(vcf_bytes, gff_bytes, caminho_fasta, prom_len)
         prom_seq = promoters_ref.get(gene_id)
         if not prom_seq: continue
         
-        # Agrupar mutações idênticas que afetam múltiplos isolados para evitar repetições na tabela VCF
         unique_vars = {}
         for v in variants:
             k = (v["pos_vcf"], v["ref"], v["alt"])
@@ -544,8 +549,6 @@ def executar_mutagenese_in_silico(vcf_bytes, gff_bytes, caminho_fasta, prom_len)
             pos_relativa = v["pos_vcf"] - v["gene_start"] if v["strand"] == "+" else v["gene_end"] - v["pos_vcf"]
             
             def calc_rel_pos(idx_val):
-                # O YEASTRACT utiliza um sistema 1-based, o Python usa 0-based.
-                # Adicionamos +1 para calibrar perfeitamente a posição do SNP e os limites do sítio físico.
                 if v["strand"] == "+":
                     return (v["prom_start"] + idx_val) - v["gene_start"] + 1
                 else:
@@ -636,7 +639,6 @@ def executar_mutagenese_in_silico(vcf_bytes, gff_bytes, caminho_fasta, prom_len)
                     "Todos Isolados Afetados": ", ".join(sorted(v["all_isos"]))
                 })
 
-    # Construir tabela Dashboard Eventos Extremos e Reguloma Dict
     eventos_extremos = []
     clean_regulon = {}
     all_tfs = sorted(list(set([t for t, c in TF_LIST])))
@@ -680,7 +682,6 @@ def executar_mutagenese_in_silico(vcf_bytes, gff_bytes, caminho_fasta, prom_len)
 # ==============================================================================
 @st.fragment
 def renderizar_painel_clinico(df_clinico_final, df_clinico_externo, df_matriz_atual, df_reg_atual, colunas_mutacoes, mapa_status_paciente, regiao_selecionada, coord_strand="N/A", limiar_mic_atual=32):
-    # Definir os nomes exatos das colunas consoante a língua ativa para evitar KeyErrors
     col_diag = tr("Diagnóstico Clínico", "Clinical Diagnosis")
     col_iso = tr("Isolado Clínico", "Clinical Isolate")
     col_nr_mut = tr("Nr. de Mutações", "No. of Mutations")
@@ -700,7 +701,6 @@ def renderizar_painel_clinico(df_clinico_final, df_clinico_externo, df_matriz_at
         
         if df_clinico_externo is not None:
             df_teste_mic = df_clinico_final.copy()
-            # Usar a col_diag dinâmica em vez de hardcode
             mics_res = df_teste_mic[df_teste_mic[col_diag].str.contains("RESIST")]["Valor_MIC_Numerico"].dropna().values
             mics_sus = df_teste_mic[df_teste_mic[col_diag].str.contains("SUSC|SUSC")]["Valor_MIC_Numerico"].dropna().values
             
@@ -1099,12 +1099,10 @@ def carregar_gff(conteudo_bytes, gene_alvo):
     gff_stream = io.BytesIO(conteudo_bytes)
     df_gff = pd.read_csv(gff_stream, sep='\t', comment='#', header=None, names=['seqid', 'source', 'type', 'start', 'end', 'score', 'strand', 'phase', 'attributes'])
     
-    # 1. Tenta extrair pela CDS e devolve apenas 1 linha
     df_cds = df_gff[(df_gff['type'] == 'CDS') & (df_gff['attributes'].str.contains(gene_alvo))].copy()
     if not df_cds.empty:
         return df_cds.sort_values(by='start', ascending=True).head(1) if df_cds.iloc[0]['strand'] == '+' else df_cds.sort_values(by='end', ascending=False).head(1)
     
-    # 2. Fallback: Extrai gene ou mRNA, mas força a devolução de apenas 1 linha para evitar Regiões duplicadas
     df_fallback = df_gff[(df_gff['type'].isin(['gene', 'mRNA'])) & (df_gff['attributes'].str.contains(gene_alvo))].copy()
     if not df_fallback.empty:
         return df_fallback.head(1)
@@ -1128,23 +1126,39 @@ def carregar_clinico(conteudo_bytes, nome_ficheiro):
 
 @st.cache_data(show_spinner=False)
 def processar_vcf_global(conteudo_bytes, lista_coordenadas):
-    try: conteudo_texto = conteudo_bytes.decode('utf-8')
-    except UnicodeDecodeError: conteudo_texto = gzip.decompress(conteudo_bytes).decode('utf-8')
-    vcf_stream = io.StringIO(conteudo_texto)
+    if conteudo_bytes.startswith(b"\x1f\x8b"):
+        vcf_stream = io.TextIOWrapper(gzip.GzipFile(fileobj=io.BytesIO(conteudo_bytes)), encoding='utf-8', errors='ignore')
+    else:
+        vcf_stream = io.TextIOWrapper(io.BytesIO(conteudo_bytes), encoding='utf-8', errors='ignore')
 
-    skip_rows = 0; colunas_vcf = []
+    skip_rows = 0; colunas_vcf = []; cabecalho_lido = False
     for line in vcf_stream:
-        if line.startswith('#CHROM'): colunas_vcf = line.strip().split('\t'); break
+        if line.startswith('#CHROM'): 
+            colunas_vcf = line.strip().split('\t')
+            cabecalho_lido = True
+            break
         skip_rows += 1
 
+    if not cabecalho_lido:
+        return pd.DataFrame(), []
+
     vcf_stream.seek(0)
-    vcf_reader = pd.read_csv(vcf_stream, sep='\t', skiprows=skip_rows, chunksize=50000, dtype=str)
+    vcf_reader = pd.read_csv(vcf_stream, sep='\t', skiprows=skip_rows, chunksize=20000, dtype=str, low_memory=True, on_bad_lines='skip')
     
     chunks_uteis = []
     for chunk in vcf_reader:
-        chunk = chunk.rename(columns={'#CHROM': '#CHROM'})
+        if '#CHROM' in chunk.columns:
+            chunk = chunk.rename(columns={'#CHROM': '#CHROM'})
+        elif 'CHROM' in chunk.columns:
+            chunk = chunk.rename(columns={'CHROM': '#CHROM'})
+        else:
+            continue
+            
         chunk['chrom_normalizado_vcf'] = chunk['#CHROM'].apply(normalizar_chrom)
+        chunk['POS'] = pd.to_numeric(chunk['POS'], errors='coerce')
+        chunk = chunk.dropna(subset=['POS'])
         chunk['POS'] = chunk['POS'].astype(int)
+        
         mascara_global = pd.Series(False, index=chunk.index)
         for coord in lista_coordenadas:
             mascara_local = (chunk['chrom_normalizado_vcf'] == coord['chrom_normalizado']) & (chunk['POS'] >= coord['start']) & (chunk['POS'] <= coord['end'])
@@ -1658,7 +1672,7 @@ with aba_analise_variantes:
                                 
                                 if df_clinico_externo is not None:
                                     sub_clinico_row = corresponder_amostra(paciente, mapa_clinico_sanitizado)
-                                            
+                                    
                                     if sub_clinico_row is not None:
                                         mapa_cols_min = {str(c).lower().strip(): c for c in df_clinico_externo.columns}
                                         
@@ -1782,7 +1796,6 @@ with aba_mutagenese:
                     perdas_totais = df_extremos[df_extremos["Tipo"] == "🚨 PERDA TOTAL"]
                     ganhos_novo = df_extremos[df_extremos["Tipo"] == "✨ GANHO DE NOVO"]
                     
-                    # 1. RESUMO METRICAS PRINCIPAIS
                     st.markdown(tr("### 📊 Resumo de Impactos Regulatórios", "### 📊 Summary of Regulatory Impacts"))
                     col_m1, col_m2 = st.columns(2)
                     col_m1.metric(tr("🔴 Sítios Físicos Perdidos (Global)", "🔴 Lost Physical Sites (Global)"), f"{total_perdas}", tr(f"-{len(perdas_totais)} Perdas Totais (Gene-TF-Isolado)", f"-{len(perdas_totais)} Total Losses (Gene-TF-Isolate)"), delta_color="inverse")
@@ -1790,7 +1803,6 @@ with aba_mutagenese:
                     
                     st.markdown("---")
                     
-                    # 2. DASHBOARD DE TOP 10 (GRÁFICOS DE BARRAS)
                     st.markdown(tr("#### 🏆 Top 10 Fatores de Transcrição (Eventos Extremos)", "#### 🏆 Top 10 Transcription Factors (Extreme Events)"))
                     col_chart1, col_chart2 = st.columns(2)
                     
@@ -1814,7 +1826,6 @@ with aba_mutagenese:
 
                     st.markdown("---")
                     
-                    # 3. TABELAS DETALHADAS DE EXCLUSIVIDADE (AGRUPADAS POR GENE-TF)
                     st.markdown(tr("### 🔎 Análise de Exclusividade Detalhada (Gene vs Fator de Transcrição)", "### 🔎 Detailed Exclusivity Analysis (Gene vs Transcription Factor)"))
                     st.markdown(tr(
                         "Identificação de promotores e as respetivas populações de isolados que sofreram **Perda Total** (tinham sítios físicos e perderam todos) ou **Ganho De Novo** (não tinham nenhum sítio físico e ganharam).",
@@ -1829,7 +1840,6 @@ with aba_mutagenese:
                                 Isolados_Afetados=('Isolado', lambda x: ', '.join(sorted(x))),
                                 Qtd_Isolados=('Isolado', 'count')
                             ).reset_index().sort_values(by="Qtd_Isolados", ascending=False)
-                            # Translating column names before display
                             df_pt_show = df_pt_show.rename(columns={"Fator de Transcrição": tr("Fator de Transcrição", "Transcription Factor"), "Sítios_Ref": tr("Sítios (Ref)", "Sites (Ref)"), "Isolados_Afetados": tr("Isolados Afetados", "Affected Isolates"), "Qtd_Isolados": tr("Qtd Isolados", "Qty Isolates")})
                             st.dataframe(df_pt_show, use_container_width=True, hide_index=True)
                         else:
@@ -1849,7 +1859,6 @@ with aba_mutagenese:
                     
                     st.markdown("---")
                     
-                    # 4. TABELA GERAL
                     st.markdown(tr("### 📋 Tabela Geral de Impactos Regulatórios (Footprints Físicos YEASTRACT)", "### 📋 General Table of Regulatory Impacts (YEASTRACT Physical Footprints)"))
                     
                     df_mut_show = df_mutagenese.rename(columns={
