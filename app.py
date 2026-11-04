@@ -235,6 +235,17 @@ def agrupar_sitios_fisicos(lista_motivos, margem_bp=10, footprint_alvo=12):
         
     return sitios_agrupados
 
+def obter_bytes_gff_local():
+    """Procura automaticamente um ficheiro GFF na raiz do repositório."""
+    candidatos = ["genoma_referencia.gff", "anotacao.gff", "C_glabrata.gff"]
+    for c in candidatos:
+        if os.path.exists(c):
+            with open(c, "rb") as f: return f.read()
+    for ficheiro in os.listdir("."):
+        if ficheiro.endswith((".gff", ".gff3", ".gff.gz", ".gff3.gz")):
+            with open(ficheiro, "rb") as f: return f.read()
+    return b""
+
 def resolver_caminho_fasta(file_uploader_obj=None):
     if file_uploader_obj is not None:
         nome_temp = "temp_user_fasta.gz" if file_uploader_obj.name.endswith(".gz") else "temp_user_fasta.fasta"
@@ -1094,6 +1105,9 @@ def renderizar_painel_clinico(df_clinico_final, df_clinico_externo, df_matriz_at
         else:
             st.warning(tr("⚠️ Dados clínicos ou de mutações insuficientes para gerar a matriz de associação.", "⚠️ Insufficient clinical or mutational data to generate the association matrix."))
 
+# ==============================================================================
+# LEITURA OTIMIZADA DO GFF (AGORA É FEITA AUTOMATICAMENTE DO REPOSITÓRIO)
+# ==============================================================================
 @st.cache_data(show_spinner=False)
 def carregar_gff(conteudo_bytes, gene_alvo):
     gff_stream = io.BytesIO(conteudo_bytes)
@@ -1201,12 +1215,10 @@ with st.sidebar.expander(tr("⚙️ Configurações Avançadas (Opcional)", "⚙
 is_apenas_exatos = True
 val_rigor_pwm = 1.0
 
+# OS CAMPOS DA BARRA LATERAL FORAM ATUALIZADOS AQUI! O GFF E FASTA DESAPARECERAM.
 st.sidebar.subheader(tr("📂 Upload de Ficheiros Genómicos", "📂 Genomic Files Upload"))
-
-gff_file = st.sidebar.file_uploader(tr("1. Ficheiro GFF", "1. GFF File"), type=["gff", "gff3"], key="up_gff")
-vcf_original_file = st.sidebar.file_uploader(tr("2. Ficheiro VCF Original (Fonte das Variantes)", "2. Original VCF File (Variant Source)"), type=["vcf", "gz"], key="up_vcf")
-dados_clinicos_file = st.sidebar.file_uploader(tr("3. Ficheiro de Metadados (Fluconazol, etc.)", "3. Metadata File (Fluconazole, etc.)"), type=["csv", "txt", "xlsx"], key="up_meta")
-fasta_file = st.sidebar.file_uploader(tr("4. Ficheiro FASTA (Promotores/Genoma)", "4. FASTA File (Promoters/Genome)"), type=["fasta", "fa", "gz"], key="up_fasta")
+vcf_original_file = st.sidebar.file_uploader(tr("1. Ficheiro VCF Original (Amostras)", "1. Original VCF File (Samples)"), type=["vcf", "gz"], key="up_vcf")
+dados_clinicos_file = st.sidebar.file_uploader(tr("2. Ficheiro de Metadados (Fluconazol, etc.)", "2. Metadata File (Fluconazole, etc.)"), type=["csv", "txt", "xlsx"], key="up_meta")
 
 
 # ==============================================================================
@@ -1221,514 +1233,524 @@ aba_analise_variantes, aba_matriz_global, aba_mutagenese, aba_reguloma = st.tabs
 
 # ----------------- ABA 1: FUNCIONALIDADE ORIGINAL DO VCF -----------------
 with aba_analise_variantes:
-    if gff_file and vcf_original_file:
+    if vcf_original_file:
         with st.spinner(tr("A processar com regra cega IUPAC e coordenadas separadas...", "Processing with blind IUPAC rule and separated coordinates...")):
             try:
-                caminho_fasta_resolvido = resolver_caminho_fasta(fasta_file)
-                df_gff_filtrado = carregar_gff(gff_file.getvalue(), GENE_ALVO)
-
-                if df_gff_filtrado.empty:
-                    st.error(tr(f"❌ Erro: O gene '{GENE_ALVO}' não foi encontrado no GFF.", f"❌ Error: Gene '{GENE_ALVO}' was not found in the GFF."))
+                caminho_fasta_resolvido = resolver_caminho_fasta(None)
+                gff_bytes = obter_bytes_gff_local()
+                
+                if not gff_bytes:
+                    st.error(tr("❌ Erro: Não foi encontrado nenhum ficheiro .gff no repositório. Por favor, faça upload do GFF para o GitHub.", "❌ Error: No .gff file found in the repository. Please upload it to GitHub."))
                 else:
-                    regioes_promotoras = {}
-                    for idx, row in df_gff_filtrado.reset_index().iterrows():
-                        chrom_gff = str(row['seqid']); chrom_normalizado = normalizar_chrom(chrom_gff)
-                        strand = row['strand']; start = int(row['start']); end = int(row['end'])
-                        
-                        if strand == '+': p_start, p_end = max(1, start - TAMANHO_PROMOTOR), start - 1
-                        else: p_start, p_end = end + 1, end + TAMANHO_PROMOTOR
-                        
-                        nome_regiao = tr(f"Região {idx+1} Chr{chrom_normalizado} ({p_start}-{p_end})", f"Region {idx+1} Chr{chrom_normalizado} ({p_start}-{p_end})")
-                        regioes_promotoras[nome_regiao] = {
-                            'chrom_original': chrom_gff, 'chrom_normalizado': chrom_normalizado, 
-                            'start': p_start, 'end': p_end, 'strand': strand, 'start_gene': start, 'end_gene': end
-                        }
-                    
-                    lista_coordenadas = list(regioes_promotoras.values())
-                    df_vcf_global, amostras_originais = processar_vcf_global(vcf_original_file.getvalue(), lista_coordenadas)
-                    
-                    lista_cg = [str(nome).strip() for nome in amostras_originais]
-                    mapa_original_para_cg = {str(nome).strip(): str(nome).strip() for nome in amostras_originais}
+                    df_gff_filtrado = carregar_gff(gff_bytes, GENE_ALVO)
 
-                    df_clinico_externo = None
-                    if dados_clinicos_file:
-                        df_clinico_externo = carregar_clinico(dados_clinicos_file.getvalue(), dados_clinicos_file.name)
-
-                    sumario_por_regiao, matrizes_completas = {}, {}
-                    dados_regua_por_regiao, analise_regulatoria_por_regiao = {}, {}
-                    motivos_nativos_por_regiao = {}
-
-                    for nome_regiao, coord in regioes_promotoras.items():
-                        dados_pacientes = {cg: {} for cg in lista_cg}; total_missing = 0
-                        tss = coord['start_gene'] if coord['strand'] == '+' else coord['end_gene']
+                    if df_gff_filtrado.empty:
+                        st.error(tr(f"❌ Erro: O gene '{GENE_ALVO}' não foi encontrado no GFF.", f"❌ Error: Gene '{GENE_ALVO}' was not found in the GFF."))
+                    else:
+                        regioes_promotoras = {}
+                        for idx, row in df_gff_filtrado.reset_index().iterrows():
+                            chrom_gff = str(row['seqid']); chrom_normalizado = normalizar_chrom(chrom_gff)
+                            strand = row['strand']; start = int(row['start']); end = int(row['end'])
+                            
+                            if strand == '+': p_start, p_end = max(1, start - TAMANHO_PROMOTOR), start - 1
+                            else: p_start, p_end = end + 1, end + TAMANHO_PROMOTOR
+                            
+                            nome_regiao = tr(f"Região {idx+1} Chr{chrom_normalizado} ({p_start}-{p_end})", f"Region {idx+1} Chr{chrom_normalizado} ({p_start}-{p_end})")
+                            regioes_promotoras[nome_regiao] = {
+                                'chrom_original': chrom_gff, 'chrom_normalizado': chrom_normalizado, 
+                                'start': p_start, 'end': p_end, 'strand': strand, 'start_gene': start, 'end_gene': end
+                            }
                         
-                        nativos_encontrados = mapear_motivos_nativos_referencia(
-                            coord, tss, caminho_fasta=caminho_fasta_resolvido, 
-                            gene_alvo=GENE_ALVO, offset_utr=offset_calibracao, tamanho_promotor=TAMANHO_PROMOTOR
-                        )
-                        motivos_nativos_por_regiao[nome_regiao] = nativos_encontrados
+                        lista_coordenadas = list(regioes_promotoras.values())
+                        df_vcf_global, amostras_originais = processar_vcf_global(vcf_original_file.getvalue(), lista_coordenadas)
                         
-                        df_sub_total = pd.DataFrame()
-                        if not df_vcf_global.empty:
-                            df_sub_total = df_vcf_global[
-                                (df_vcf_global['chrom_normalizado_vcf'] == coord['chrom_normalizado']) & 
-                                (df_vcf_global['POS'] >= coord['start']) & (coord['end'] >= df_vcf_global['POS'])
-                            ]
+                        lista_cg = [str(nome).strip() for nome in amostras_originais]
+                        mapa_original_para_cg = {str(nome).strip(): str(nome).strip() for nome in amostras_originais}
 
-                        detalhes_regulatorios, variantes_regua = [], []
-                        if not df_sub_total.empty:
-                            detalhes_regulatorios, variantes_regua = analisar_impacto_regulatorio(
-                                df_sub_total, coord, tss, MUTACOES_FENOTIPO,
-                                caminho_fasta=caminho_fasta_resolvido, tamanho_promotor=TAMANHO_PROMOTOR,
-                                gene_alvo=GENE_ALVO, rigor_pwm=val_rigor_pwm, apenas_exatos=is_apenas_exatos,
-                                offset_utr=offset_calibracao
+                        df_clinico_externo = None
+                        if dados_clinicos_file:
+                            df_clinico_externo = carregar_clinico(dados_clinicos_file.getvalue(), dados_clinicos_file.name)
+
+                        sumario_por_regiao, matrizes_completas = {}, {}
+                        dados_regua_por_regiao, analise_regulatoria_por_regiao = {}, {}
+                        motivos_nativos_por_regiao = {}
+
+                        for nome_regiao, coord in regioes_promotoras.items():
+                            dados_pacientes = {cg: {} for cg in lista_cg}; total_missing = 0
+                            tss = coord['start_gene'] if coord['strand'] == '+' else coord['end_gene']
+                            
+                            nativos_encontrados = mapear_motivos_nativos_referencia(
+                                coord, tss, caminho_fasta=caminho_fasta_resolvido, 
+                                gene_alvo=GENE_ALVO, offset_utr=offset_calibracao, tamanho_promotor=TAMANHO_PROMOTOR
                             )
-
-                        if detalhes_regulatorios:
-                            posicoes_processadas_missing = set()
-                            for det in detalhes_regulatorios:
-                                pos_m, col_nome = det["Posição Absoluta"], det["Nome_Coluna"]
-                                row_vcf_especifica = df_sub_total[df_sub_total['POS'] == pos_m].iloc[0]
-                                det["QUAL"] = row_vcf_especifica.get("QUAL", "N/A")
-                                det["Mutacao_Exata"] = f"{row_vcf_especifica['REF']}->{row_vcf_especifica['ALT']}"
-                                
-                                for am_orig, nome_cg in mapa_original_para_cg.items():
-                                    gt_traduzido = extrair_e_traduzir_gt(row_vcf_especifica[am_orig], row_vcf_especifica['REF'], row_vcf_especifica['ALT'])
-                                    if gt_traduzido == "./." and (pos_m, am_orig) not in posicoes_processadas_missing:
-                                        total_missing += 1; posicoes_processadas_missing.add((pos_m, am_orig))
-                                    dados_pacientes[nome_cg][col_nome] = gt_traduzido
+                            motivos_nativos_por_regiao[nome_regiao] = nativos_encontrados
                             
-                            total_snps = sum(1 for r in detalhes_regulatorios if str(r.get("Type")).upper() == "SNP")
-                            total_indels = sum(1 for r in detalhes_regulatorios if str(r.get("Type")).upper() == "INDEL")
-                            total_variantes = len(detalhes_regulatorios)
-                        else:
-                            total_snps, total_indels, total_variantes = 0, 0, 0
+                            df_sub_total = pd.DataFrame()
+                            if not df_vcf_global.empty:
+                                df_sub_total = df_vcf_global[
+                                    (df_vcf_global['chrom_normalizado_vcf'] == coord['chrom_normalizado']) & 
+                                    (df_vcf_global['POS'] >= coord['start']) & (coord['end'] >= df_vcf_global['POS'])
+                                ]
 
-                        sumario_por_regiao[nome_regiao] = {
-                            tr("Total Variantes", "Total Variants"): total_variantes, 
-                            "SNPs": total_snps, 
-                            "Indels": total_indels, 
-                            tr("Valores Omissos", "Missing Values"): total_missing
-                        }
-                        dados_regua_por_regiao[nome_regiao] = detalhes_regulatorios
-                        analise_regulatoria_por_regiao[nome_regiao] = pd.DataFrame(detalhes_regulatorios)
+                            detalhes_regulatorios, variantes_regua = [], []
+                            if not df_sub_total.empty:
+                                detalhes_regulatorios, variantes_regua = analisar_impacto_regulatorio(
+                                    df_sub_total, coord, tss, MUTACOES_FENOTIPO,
+                                    caminho_fasta=caminho_fasta_resolvido, tamanho_promotor=TAMANHO_PROMOTOR,
+                                    gene_alvo=GENE_ALVO, rigor_pwm=val_rigor_pwm, apenas_exatos=is_apenas_exatos,
+                                    offset_utr=offset_calibracao
+                                )
+
+                            if detalhes_regulatorios:
+                                posicoes_processadas_missing = set()
+                                for det in detalhes_regulatorios:
+                                    pos_m, col_nome = det["Posição Absoluta"], det["Nome_Coluna"]
+                                    row_vcf_especifica = df_sub_total[df_sub_total['POS'] == pos_m].iloc[0]
+                                    det["QUAL"] = row_vcf_especifica.get("QUAL", "N/A")
+                                    det["Mutacao_Exata"] = f"{row_vcf_especifica['REF']}->{row_vcf_especifica['ALT']}"
+                                    
+                                    for am_orig, nome_cg in mapa_original_para_cg.items():
+                                        gt_traduzido = extrair_e_traduzir_gt(row_vcf_especifica[am_orig], row_vcf_especifica['REF'], row_vcf_especifica['ALT'])
+                                        if gt_traduzido == "./." and (pos_m, am_orig) not in posicoes_processadas_missing:
+                                            total_missing += 1; posicoes_processadas_missing.add((pos_m, am_orig))
+                                        dados_pacientes[nome_cg][col_nome] = gt_traduzido
+                                
+                                total_snps = sum(1 for r in detalhes_regulatorios if str(r.get("Type")).upper() == "SNP")
+                                total_indels = sum(1 for r in detalhes_regulatorios if str(r.get("Type")).upper() == "INDEL")
+                                total_variantes = len(detalhes_regulatorios)
+                            else:
+                                total_snps, total_indels, total_variantes = 0, 0, 0
+
+                            sumario_por_regiao[nome_regiao] = {
+                                tr("Total Variantes", "Total Variants"): total_variantes, 
+                                "SNPs": total_snps, 
+                                "Indels": total_indels, 
+                                tr("Valores Omissos", "Missing Values"): total_missing
+                            }
+                            dados_regua_por_regiao[nome_regiao] = detalhes_regulatorios
+                            analise_regulatoria_por_regiao[nome_regiao] = pd.DataFrame(detalhes_regulatorios)
+                            
+                            matrizes_completas[nome_regiao] = pd.DataFrame.from_dict(dados_pacientes, orient='index').reset_index().rename(columns={'index': 'Pacientes'}) if total_variantes > 0 else pd.DataFrame(columns=['Pacientes'])
+
+                        df_sumario_geral = pd.DataFrame.from_dict(sumario_por_regiao, orient='index').reset_index().rename(columns={'index': tr('Região Alvo Analisada', 'Analyzed Target Region')})
+                        st.subheader(tr("📊 Estatísticas: Tabela de Frequências", "📊 Statistics: Frequency Table"))
+                        st.dataframe(df_sumario_geral, use_container_width=True, hide_index=True)
+
+                        st.markdown("---")
+                        st.subheader(tr("🧠 Análise por Região Promotora", "🧠 Analysis by Promoter Region"))
+                        abas_avancadas = st.tabs([f"🧬 {k}" for k in regioes_promotoras.keys()])
                         
-                        matrizes_completas[nome_regiao] = pd.DataFrame.from_dict(dados_pacientes, orient='index').reset_index().rename(columns={'index': 'Pacientes'}) if total_variantes > 0 else pd.DataFrame(columns=['Pacientes'])
-
-                    df_sumario_geral = pd.DataFrame.from_dict(sumario_por_regiao, orient='index').reset_index().rename(columns={'index': tr('Região Alvo Analisada', 'Analyzed Target Region')})
-                    st.subheader(tr("📊 Estatísticas: Tabela de Frequências", "📊 Statistics: Frequency Table"))
-                    st.dataframe(df_sumario_geral, use_container_width=True, hide_index=True)
-
-                    st.markdown("---")
-                    st.subheader(tr("🧠 Análise por Região Promotora", "🧠 Analysis by Promoter Region"))
-                    abas_avancadas = st.tabs([f"🧬 {k}" for k in regioes_promotoras.keys()])
-                    
-                    for idx, (nome_regiao, df_reg) in enumerate(analise_regulatoria_por_regiao.items()):
-                        with abas_avancadas[idx]:
-                            nativos_lista = motivos_nativos_por_regiao.get(nome_regiao, [])
-                            if nativos_lista:
-                                sitios_agrupados = agrupar_sitios_fisicos(nativos_lista)
-                                total_matches = len(nativos_lista)
-                                total_loci = len(sitios_agrupados)
-                                
-                                exp_title = tr(
-                                    f"🛡️ Prova de Base: {total_loci} Sítios de Ligação Reais Encontrados ({total_matches} matches de consensos)",
-                                    f"🛡️ Base Proof: {total_loci} Real Binding Sites Found ({total_matches} consensus matches)"
-                                )
-                                with st.expander(exp_title, expanded=False):
-                                    linhas_exibicao = []
-                                    for idx_sitio, sitio in enumerate(sitios_agrupados, 1):
-                                        consensos = list(set([m.get("Consenso_IUPAC", "") for m in sitio["motivos"]]))
-                                        fitas = list(set([str(m.get("Fita", "")) for m in sitio["motivos"]]))
-                                        coords_y = list(set([str(m.get("Coordenada_YEASTRACT", "")) for m in sitio["motivos"]]))
-                                        
-                                        linhas_exibicao.append({
-                                            "Locus #": idx_sitio,
-                                            tr("Fator de Transcrição", "Transcription Factor"): sitio["FT"],
-                                            tr("Coordenada Física", "Physical Coordinate"): f"{sitio['inicio']} a {sitio['fim']} bp",
-                                            tr("Posições YEASTRACT", "YEASTRACT Positions"): " / ".join(coords_y),
-                                            tr("Consensos Envolvidos", "Involved Consensuses"): " | ".join(consensos),
-                                            tr("Fitas DNA", "DNA Strands"): " / ".join(fitas),
-                                            tr("Nº de Matches", "No. of Matches"): len(sitio["motivos"])
-                                        })
-                                        
-                                    df_nativos_exib = pd.DataFrame(linhas_exibicao)
-                                    st.dataframe(df_nativos_exib, use_container_width=True, hide_index=True)
-                            else:
-                                st.info(tr("ℹ️ Nenhum consenso nativo do YEASTRACT encontrado no FASTA para esta região promotora.", "ℹ️ No native YEASTRACT consensus found in the FASTA for this promoter region."))
-                            
-                            if df_reg.empty and not nativos_lista:
-                                st.info(tr("ℹ️ Nenhuma variante ou sítio nativo detetado nesta região.", "ℹ️ No variant or native site detected in this region."))
-                            else:
-                                st.markdown(tr(f"#### 🗺️ Régua Física do Promotor: {nome_regiao}", f"#### 🗺️ Physical Promoter Ruler: {nome_regiao}"))
-                                fig_regua = go.Figure()
-                                x_inicio_rel = -int(TAMANHO_PROMOTOR)
-                                
-                                pos_cols_x = []
-                                if not df_reg.empty: pos_cols_x.extend(df_reg["Posição Relativa (TSS)"].astype(int).tolist())
-                                if nativos_lista: pos_cols_x.extend([m["Pos_5p"] for m in nativos_lista] + [m["Pos_3p"] for m in nativos_lista])
-                                    
-                                min_pos_rel = min(pos_cols_x) if pos_cols_x else x_inicio_rel
-                                max_pos_rel = max(pos_cols_x) if pos_cols_x else 100
-                                lim_inf_x = min(x_inicio_rel - 60, min_pos_rel - 50)
-                                lim_sup_x = max(int(TAMANHO_PROMOTOR * 0.1), max_pos_rel + 50)
-
-                                tfs_ativos_neste_promotor = set()
-                                
+                        for idx, (nome_regiao, df_reg) in enumerate(analise_regulatoria_por_regiao.items()):
+                            with abas_avancadas[idx]:
+                                nativos_lista = motivos_nativos_por_regiao.get(nome_regiao, [])
                                 if nativos_lista:
-                                    for m in nativos_lista:
-                                        nome_raw = str(m.get("FT", "")).strip()
-                                        tf_clean = re.sub(r'[pP]$', '', nome_raw)
-                                        tfs_ativos_neste_promotor.add(tf_clean)
-                                
-                                col_impacto = next((c for c in df_reg.columns if c in ["Efeito", "Consequencia", "Potencial Regulatório / Efeito Predito"]), "Consequencia")
-                                if not df_reg.empty:
-                                    for _, row_r in df_reg.iterrows():
-                                        cons_texto = str(row_r.get(col_impacto, ""))
-                                        for tf_item, _ in TF_LIST: 
-                                            tf_base = re.sub(r'[pP]$', '', tf_item)
-                                            if f"[{tf_base}]" in cons_texto or f"[{tf_base}p]" in cons_texto or f"{tf_base}:" in cons_texto or f" {tf_base} " in cons_texto:
-                                                tfs_ativos_neste_promotor.add(tf_base)
-                                
-                                lista_tfs_ordenados = sorted(list(tfs_ativos_neste_promotor))
-                                
-                                tracks_tfs = ["Other Variants"] 
-                                mapa_tf_track = {}
-                                paleta_cores = px.colors.qualitative.Alphabet 
-                                
-                                for idx_dinamico, tf_chave in enumerate(lista_tfs_ordenados):
-                                    track_idx = idx_dinamico + 1
-                                    nome_exibicao = f"{tf_chave}p" if not tf_chave.endswith("g") else tf_chave
-                                    cor_hex = paleta_cores[idx_dinamico % len(paleta_cores)] 
+                                    sitios_agrupados = agrupar_sitios_fisicos(nativos_lista)
+                                    total_matches = len(nativos_lista)
+                                    total_loci = len(sitios_agrupados)
                                     
-                                    tracks_tfs.append(nome_exibicao)
-                                    mapa_tf_track[tf_chave] = (nome_exibicao, track_idx, cor_hex)
-
-                                fig_regua.add_shape(type="rect", x0=0, y0=-0.5, x1=lim_sup_x, y1=len(tracks_tfs)-0.5, fillcolor="#e0e7ff", line=dict(color="#6366f1", width=2), layer="below")
-                                fig_regua.add_vline(x=0, line_width=2, line_color="#10b981", line_dash="solid")
-                                fig_regua.add_vline(x=x_inicio_rel, line_width=2, line_color="#3b82f6", line_dash="dash")
-
-                                fig_regua.add_annotation(
-                                    x=x_inicio_rel, y=len(tracks_tfs) - 0.3, text="<b>5' PROMOTER</b>",
-                                    showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, ax=0, ay=-30,
-                                    font=dict(size=12, color="#1e40af")
-                                )
-                                fig_regua.add_annotation(
-                                    x=0, y=len(tracks_tfs) - 0.3, text="<b>TSS (+1) &#10132; GENE (3')</b>",
-                                    showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, ax=0, ay=-30,
-                                    font=dict(size=12, color="#065f46")
-                                )
+                                    exp_title = tr(
+                                        f"🛡️ Prova de Base: {total_loci} Sítios de Ligação Reais Encontrados ({total_matches} matches de consensos)",
+                                        f"🛡️ Base Proof: {total_loci} Real Binding Sites Found ({total_matches} consensus matches)"
+                                    )
+                                    with st.expander(exp_title, expanded=False):
+                                        linhas_exibicao = []
+                                        for idx_sitio, sitio in enumerate(sitios_agrupados, 1):
+                                            consensos = list(set([m.get("Consenso_IUPAC", "") for m in sitio["motivos"]]))
+                                            fitas = list(set([str(m.get("Fita", "")) for m in sitio["motivos"]]))
+                                            coords_y = list(set([str(m.get("Coordenada_YEASTRACT", "")) for m in sitio["motivos"]]))
+                                            
+                                            linhas_exibicao.append({
+                                                "Locus #": idx_sitio,
+                                                tr("Fator de Transcrição", "Transcription Factor"): sitio["FT"],
+                                                tr("Coordenada Física", "Physical Coordinate"): f"{sitio['inicio']} a {sitio['fim']} bp",
+                                                tr("Posições YEASTRACT", "YEASTRACT Positions"): " / ".join(coords_y),
+                                                tr("Consensos Envolvidos", "Involved Consensuses"): " | ".join(consensos),
+                                                tr("Fitas DNA", "DNA Strands"): " / ".join(fitas),
+                                                tr("Nº de Matches", "No. of Matches"): len(sitio["motivos"])
+                                            })
+                                            
+                                        df_nativos_exib = pd.DataFrame(linhas_exibicao)
+                                        st.dataframe(df_nativos_exib, use_container_width=True, hide_index=True)
+                                else:
+                                    st.info(tr("ℹ️ Nenhum consenso nativo do YEASTRACT encontrado no FASTA para esta região promotora.", "ℹ️ No native YEASTRACT consensus found in the FASTA for this promoter region."))
                                 
-                                nativos_por_tf = {k: [] for k in mapa_tf_track.keys()}
-                                for m_nat in nativos_lista:
-                                    nome_raw = str(m_nat.get("FT", "")).strip()
-                                    tf_k = re.sub(r'[pP]$', '', nome_raw).strip()
+                                if df_reg.empty and not nativos_lista:
+                                    st.info(tr("ℹ️ Nenhuma variante ou sítio nativo detetado nesta região.", "ℹ️ No variant or native site detected in this region."))
+                                else:
+                                    st.markdown(tr(f"#### 🗺️ Régua Física do Promotor: {nome_regiao}", f"#### 🗺️ Physical Promoter Ruler: {nome_regiao}"))
+                                    fig_regua = go.Figure()
+                                    x_inicio_rel = -int(TAMANHO_PROMOTOR)
                                     
-                                    matched_tf = None
-                                    if tf_k in mapa_tf_track:
-                                        matched_tf = tf_k
-                                    else:
-                                        for k in mapa_tf_track.keys():
-                                            if k.lower() == tf_k.lower() or k.lower() == nome_raw.lower():
-                                                matched_tf = k; break
-                                        if not matched_tf:
+                                    pos_cols_x = []
+                                    if not df_reg.empty: pos_cols_x.extend(df_reg["Posição Relativa (TSS)"].astype(int).tolist())
+                                    if nativos_lista: pos_cols_x.extend([m["Pos_5p"] for m in nativos_lista] + [m["Pos_3p"] for m in nativos_lista])
+                                        
+                                    min_pos_rel = min(pos_cols_x) if pos_cols_x else x_inicio_rel
+                                    max_pos_rel = max(pos_cols_x) if pos_cols_x else 100
+                                    lim_inf_x = min(x_inicio_rel - 60, min_pos_rel - 50)
+                                    lim_sup_x = max(int(TAMANHO_PROMOTOR * 0.1), max_pos_rel + 50)
+
+                                    tfs_ativos_neste_promotor = set()
+                                    
+                                    if nativos_lista:
+                                        for m in nativos_lista:
+                                            nome_raw = str(m.get("FT", "")).strip()
+                                            tf_clean = re.sub(r'[pP]$', '', nome_raw)
+                                            tfs_ativos_neste_promotor.add(tf_clean)
+                                    
+                                    col_impacto = next((c for c in df_reg.columns if c in ["Efeito", "Consequencia", "Potencial Regulatório / Efeito Predito"]), "Consequencia")
+                                    if not df_reg.empty:
+                                        for _, row_r in df_reg.iterrows():
+                                            cons_texto = str(row_r.get(col_impacto, ""))
+                                            for tf_item, _ in TF_LIST: 
+                                                tf_base = re.sub(r'[pP]$', '', tf_item)
+                                                if f"[{tf_base}]" in cons_texto or f"[{tf_base}p]" in cons_texto or f"{tf_base}:" in cons_texto or f" {tf_base} " in cons_texto:
+                                                    tfs_ativos_neste_promotor.add(tf_base)
+                                    
+                                    lista_tfs_ordenados = sorted(list(tfs_ativos_neste_promotor))
+                                    
+                                    tracks_tfs = ["Other Variants"] 
+                                    mapa_tf_track = {}
+                                    paleta_cores = px.colors.qualitative.Alphabet 
+                                    
+                                    for idx_dinamico, tf_chave in enumerate(lista_tfs_ordenados):
+                                        track_idx = idx_dinamico + 1
+                                        nome_exibicao = f"{tf_chave}p" if not tf_chave.endswith("g") else tf_chave
+                                        cor_hex = paleta_cores[idx_dinamico % len(paleta_cores)] 
+                                        
+                                        tracks_tfs.append(nome_exibicao)
+                                        mapa_tf_track[tf_chave] = (nome_exibicao, track_idx, cor_hex)
+
+                                    fig_regua.add_shape(type="rect", x0=0, y0=-0.5, x1=lim_sup_x, y1=len(tracks_tfs)-0.5, fillcolor="#e0e7ff", line=dict(color="#6366f1", width=2), layer="below")
+                                    fig_regua.add_vline(x=0, line_width=2, line_color="#10b981", line_dash="solid")
+                                    fig_regua.add_vline(x=x_inicio_rel, line_width=2, line_color="#3b82f6", line_dash="dash")
+
+                                    fig_regua.add_annotation(
+                                        x=x_inicio_rel, y=len(tracks_tfs) - 0.3, text="<b>5' PROMOTER</b>",
+                                        showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, ax=0, ay=-30,
+                                        font=dict(size=12, color="#1e40af")
+                                    )
+                                    fig_regua.add_annotation(
+                                        x=0, y=len(tracks_tfs) - 0.3, text="<b>TSS (+1) &#10132; GENE (3')</b>",
+                                        showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, ax=0, ay=-30,
+                                        font=dict(size=12, color="#065f46")
+                                    )
+                                    
+                                    nativos_por_tf = {k: [] for k in mapa_tf_track.keys()}
+                                    for m_nat in nativos_lista:
+                                        nome_raw = str(m_nat.get("FT", "")).strip()
+                                        tf_k = re.sub(r'[pP]$', '', nome_raw).strip()
+                                        
+                                        matched_tf = None
+                                        if tf_k in mapa_tf_track:
+                                            matched_tf = tf_k
+                                        else:
                                             for k in mapa_tf_track.keys():
-                                                if len(k) >= 3 and (k.lower() in nome_raw.lower() or nome_raw.lower() in k.lower()):
+                                                if k.lower() == tf_k.lower() or k.lower() == nome_raw.lower():
                                                     matched_tf = k; break
+                                            if not matched_tf:
+                                                for k in mapa_tf_track.keys():
+                                                    if len(k) >= 3 and (k.lower() in nome_raw.lower() or nome_raw.lower() in k.lower()):
+                                                        matched_tf = k; break
+                                        
+                                        if matched_tf:
+                                            nativos_por_tf[matched_tf].append(m_nat)
+
+                                    coordenadas_sem_barra = {k: [] for k in mapa_tf_track.keys()}
+                                    col_impacto = next((c for c in df_reg.columns if c in ["Efeito", "Consequencia", "Potencial Regulatório / Efeito Predito"]), "Consequencia")
                                     
-                                    if matched_tf:
-                                        nativos_por_tf[matched_tf].append(m_nat)
-
-                                coordenadas_sem_barra = {k: [] for k in mapa_tf_track.keys()}
-                                col_impacto = next((c for c in df_reg.columns if c in ["Efeito", "Consequencia", "Potencial Regulatório / Efeito Predito"]), "Consequencia")
-                                
-                                if not df_reg.empty:
-                                    for _, row_r in df_reg.iterrows():
-                                        cons_texto = str(row_r.get(col_impacto, ""))
-                                        pos_rel_m = int(row_r.get("Posição Relativa (TSS)", 0))
-                                        if any(w in cons_texto for w in ["Perda", "Abolição", "Abolicao", "Ganho", "De Novo"]):
-                                            for k_tf in mapa_tf_track.keys():
-                                                if f"[{k_tf}]" in cons_texto or f"[{k_tf}p]" in cons_texto or cons_texto.startswith(f"{k_tf}:") or cons_texto.startswith(f"{k_tf}p:"):
-                                                    coordenadas_sem_barra[k_tf].append(pos_rel_m)
-                                
-                                x_limite_5p = x_inicio_rel 
-                                x_limite_3p = max(0, max_pos_rel) if pos_cols_x else 0 
-
-                                for i, track_nome in enumerate(tracks_tfs):
-                                    tf_chave_track = "Other"
-                                    for k, (lbl, idx_tr, c_hex) in mapa_tf_track.items():
-                                        if idx_tr == i:
-                                            tf_chave_track = k
-                                            break
-                                            
-                                    if i == 0:
-                                        fig_regua.add_trace(go.Scatter(
-                                            x=[x_limite_5p, x_limite_3p], y=[i, i],
-                                            mode="lines", line=dict(color="black", width=1.5, dash="solid"),
-                                            name="Linha Base SNPs" if st.session_state['lang'] == 'PT' else "SNP Baseline", legendgroup=f"TF_{tf_chave_track}",
-                                            showlegend=False, hoverinfo="skip"
-                                        ))
-                                    else:
-                                        fig_regua.add_trace(go.Scatter(
-                                            x=[x_limite_5p, x_limite_3p], y=[i + 0.08, i + 0.08],
-                                            mode="lines", line=dict(color="black", width=1.5, dash="solid"),
-                                            name="Fita Direta (+)" if st.session_state['lang'] == 'PT' else "Forward Strand (+)", legendgroup=f"TF_{tf_chave_track}",
-                                            showlegend=False, hoverinfo="skip"
-                                        ))
-                                        
-                                        fig_regua.add_trace(go.Scatter(
-                                            x=[x_limite_5p, x_limite_3p], y=[i - 0.08, i - 0.08],
-                                            mode="lines", line=dict(color="black", width=1.5, dash="solid"),
-                                            name="Fita Reversa (-)" if st.session_state['lang'] == 'PT' else "Reverse Strand (-)", legendgroup=f"TF_{tf_chave_track}",
-                                            showlegend=False, hoverinfo="skip"
-                                        ))
-
-                                for tf_chave, (track_label, track_idx, cor_hex) in mapa_tf_track.items():
-                                    siti_tf = nativos_por_tf.get(tf_chave, [])
-                                    if not siti_tf: continue
+                                    if not df_reg.empty:
+                                        for _, row_r in df_reg.iterrows():
+                                            cons_texto = str(row_r.get(col_impacto, ""))
+                                            pos_rel_m = int(row_r.get("Posição Relativa (TSS)", 0))
+                                            if any(w in cons_texto for w in ["Perda", "Abolição", "Abolicao", "Ganho", "De Novo"]):
+                                                for k_tf in mapa_tf_track.keys():
+                                                    if f"[{k_tf}]" in cons_texto or f"[{k_tf}p]" in cons_texto or cons_texto.startswith(f"{k_tf}:") or cons_texto.startswith(f"{k_tf}p:"):
+                                                        coordenadas_sem_barra[k_tf].append(pos_rel_m)
                                     
-                                    for m in siti_tf:
-                                        p_min = min(int(m["Pos_5p"]), int(m["Pos_3p"]))
-                                        p_max = max(int(m["Pos_5p"]), int(m["Pos_3p"]))
-                                        
-                                        padding_x = 4 
-                                        seletor_largura = p_max - p_min
-                                        if seletor_largura < 28:
-                                            centro = (p_min + p_max) // 2
-                                            x_min_vis = centro - 18
-                                            x_max_vis = centro + 18
+                                    x_limite_5p = x_inicio_rel 
+                                    x_limite_3p = max(0, max_pos_rel) if pos_cols_x else 0 
+
+                                    for i, track_nome in enumerate(tracks_tfs):
+                                        tf_chave_track = "Other"
+                                        for k, (lbl, idx_tr, c_hex) in mapa_tf_track.items():
+                                            if idx_tr == i:
+                                                tf_chave_track = k
+                                                break
+                                                
+                                        if i == 0:
+                                            fig_regua.add_trace(go.Scatter(
+                                                x=[x_limite_5p, x_limite_3p], y=[i, i],
+                                                mode="lines", line=dict(color="black", width=1.5, dash="solid"),
+                                                name="Linha Base SNPs" if st.session_state['lang'] == 'PT' else "SNP Baseline", legendgroup=f"TF_{tf_chave_track}",
+                                                showlegend=False, hoverinfo="skip"
+                                            ))
                                         else:
-                                            x_min_vis = p_min - padding_x
-                                            x_max_vis = p_max + padding_x
-
-                                        y0_val = track_idx - 0.40
-                                        y1_val = track_idx + 0.40
-
-                                        poly_x = [x_min_vis, x_max_vis, x_max_vis, x_min_vis, x_min_vis]
-                                        poly_y = [y0_val, y0_val, y1_val, y1_val, y0_val]
-
-                                        fita_raw = str(m.get('Fita', '')).strip()
-                                        is_direta = fita_raw == "+" or "dir" in fita_raw.lower() or "forward" in fita_raw.lower()
-                                        fita_simbolo = "➡️ Direta (+)" if is_direta and st.session_state['lang'] == 'PT' else ("➡️ Forward (+)" if is_direta else ("⬅️ Reversa (-)" if st.session_state['lang'] == 'PT' else "⬅️ Reverse (-)"))
-
-                                        sobrepostos = [
-                                            out for out in siti_tf 
-                                            if max(p_min, min(int(out["Pos_5p"]), int(out["Pos_3p"]))) <= min(p_max, max(int(out["Pos_5p"]), int(out["Pos_3p"])))
-                                        ]
-                                        
-                                        if len(sobrepostos) > 1:
-                                            hover_text = tr(f"<b>🟢 {len(sobrepostos)} Sítios Nativos Sobrepostos ({track_label}):</b><br><br>", f"<b>🟢 {len(sobrepostos)} Overlapping Native Sites ({track_label}):</b><br><br>")
-                                            for sub_i, s in enumerate(sobrepostos, 1):
-                                                s_min = min(int(s["Pos_5p"]), int(s["Pos_3p"]))
-                                                s_max = max(int(s["Pos_5p"]), int(s["Pos_3p"]))
-                                                s_fita = str(s.get('Fita', '')).strip()
-                                                s_dir = s_fita == "+" or "dir" in s_fita.lower() or "forward" in s_fita.lower()
-                                                s_simbolo = "➡️ Direta (+)" if s_dir and st.session_state['lang'] == 'PT' else ("➡️ Forward (+)" if s_dir else ("⬅️ Reversa (-)" if st.session_state['lang'] == 'PT' else "⬅️ Reverse (-)"))
-                                                hover_text += (f"<b>[{sub_i}] {s['FT']} | {s_simbolo}:</b> {s['Consenso_IUPAC']}<br>"
-                                                               f"Seq FASTA: {s['Sequencia_FASTA']} ({s_min} a {s_max} bp)<br><br>")
-                                            hover_text += tr(f"<b>Coordenada Genómica:</b> {m['Coordenada_YEASTRACT']}<extra></extra>", f"<b>Genomic Coordinate:</b> {m['Coordenada_YEASTRACT']}<extra></extra>")
-                                        else:
-                                            hover_text = (tr(f"<b>🟢 Sítio Nativo YEASTRACT: {track_label}</b><br>", f"<b>🟢 Native YEASTRACT Site: {track_label}</b><br>") +
-                                                          tr(f"<b>Fita Genómica:</b> {fita_simbolo}<br>", f"<b>Genomic Strand:</b> {fita_simbolo}<br>") +
-                                                          f"<b>Consenso IUPAC:</b> {m['Consenso_IUPAC']}<br>"
-                                                          f"<b>Seq FASTA:</b> {m['Sequencia_FASTA']}<br>" +
-                                                          tr(f"<b>Coordenada Real:</b> {p_min} bp a {p_max} bp<br>", f"<b>Real Coordinate:</b> {p_min} bp to {p_max} bp<br>") +
-                                                          tr(f"<b>Coordenada Genómica:</b> {m['Coordenada_YEASTRACT']}<extra></extra>", f"<b>Genomic Coordinate:</b> {m['Coordenada_YEASTRACT']}<extra></extra>"))
-
-                                        fig_regua.add_trace(go.Scatter(
-                                            x=poly_x, y=poly_y,
-                                            mode="lines", fill="toself", fillcolor=cor_hex,
-                                            line=dict(width=1.5, color=cor_hex, dash="solid"),
-                                            name=track_label, legendgroup=f"TF_{tf_chave}",
-                                            showlegend=False, hoveron="fills+points", hovertemplate=hover_text
-                                        ))
-
-                                if not df_reg.empty:
-                                    posicoes_por_track = {i: [] for i in range(len(tracks_tfs))}
-                                    df_regua_graf = df_reg.copy()
-                                    df_regua_graf["Posição Relativa (TSS)"] = df_regua_graf["Posição Relativa (TSS)"].astype(int)
-
-                                    for idx_v, row_v in df_regua_graf.iterrows():
-                                        pos_rel = int(row_v.get("Posição Relativa (TSS)", 0))
-                                        
-                                        val_5p_raw = row_v.get("Consenso_YEASTRACT_5p", pos_rel)
-                                        try: pos_5p_consenso = int(val_5p_raw)
-                                        except ValueError: pos_5p_consenso = pos_rel
-                                            
-                                        intervalo_consenso = row_v.get("Intervalo_Consenso", f"[{pos_rel}]")
-                                        pos_abs = row_v.get("Posição Absoluta", "N/A")
-                                        tipo_var = row_v.get("Type", "N/A")
-                                        qualidade = row_v.get("QUAL", "N/A")
-                                        mutacao = row_v.get("Mutacao_Exata", "N/A")
-                                        consequencia = str(row_v.get(col_impacto, ""))
-                                        
-                                        tfs_impactados_nesta_var = []
-                                        fragmentos_cons = [f.strip() for f in consequencia.split("||")]
-                                        
-                                        for tf_chave, (track_label, track_idx, cor_hex) in mapa_tf_track.items():
-                                            frag_tf = next((f for f in fragmentos_cons if f"[{tf_chave}]" in f or f"[{tf_chave}p]" in f or f.startswith(f"{tf_chave}:") or f.startswith(f"{tf_chave}p:") or f" {tf_chave} " in f or f" {tf_chave}p " in f), None)
-                                            if frag_tf is not None: tfs_impactados_nesta_var.append((track_label, track_idx, cor_hex, tf_chave, frag_tf))
-                                        
-                                        if not tfs_impactados_nesta_var:
-                                            tfs_impactados_nesta_var.append(("Other Variants", 0, "#64748b", "Other", consequencia))
-                                            
-                                        for track_label, track_idx, cor_hex, tf_nome, frag_texto in tfs_impactados_nesta_var:
-                                            simbolo_marcador = "circle"
-                                            tamanho_marcador = 28
-                                            cor_borda = "white"
-                                            largura_borda = 1.5
-                                            cor_preenchimento = cor_hex
-                                            
-                                            if any(w in frag_texto for w in ["Perda", "Abolição", "Abolicao", "Loss"]): 
-                                                simbolo_marcador = "circle"
-                                                tamanho_marcador = 28
-                                                cor_preenchimento = "#dc2626"
-                                                cor_borda = "#7f1d1d"
-                                                largura_borda = 2.0
-                                            elif any(w in frag_texto for w in ["Ganho", "De Novo", "Gain"]): 
-                                                simbolo_marcador = "circle"
-                                                tamanho_marcador = 28
-                                                cor_preenchimento = "#10b981"
-                                                cor_borda = "#064e3b"
-                                                largura_borda = 2.0
-                                            
-                                            vizinhos_proximos = sum(1 for pos_ant in posicoes_por_track[track_idx] if abs(pos_5p_consenso - pos_ant) < 18)
-                                            posicoes_por_track[track_idx].append(pos_5p_consenso)
-                                            
-                                            y_calc = track_idx
-                                            if vizinhos_proximos > 0:
-                                                sinal = 1 if vizinhos_proximos % 2 == 1 else -1
-                                                passo = ((vizinhos_proximos + 1) // 2) * 0.22
-                                                y_calc = max(track_idx - 0.38, min(track_idx + 0.38, track_idx + (sinal * passo)))
+                                            fig_regua.add_trace(go.Scatter(
+                                                x=[x_limite_5p, x_limite_3p], y=[i + 0.08, i + 0.08],
+                                                mode="lines", line=dict(color="black", width=1.5, dash="solid"),
+                                                name="Fita Direta (+)" if st.session_state['lang'] == 'PT' else "Forward Strand (+)", legendgroup=f"TF_{tf_chave_track}",
+                                                showlegend=False, hoverinfo="skip"
+                                            ))
                                             
                                             fig_regua.add_trace(go.Scatter(
-                                                x=[pos_5p_consenso], y=[y_calc], mode="markers",
-                                                marker=dict(symbol=simbolo_marcador, size=tamanho_marcador, color=cor_preenchimento, opacity=1.0, line=dict(width=largura_borda, color=cor_borda)),
-                                                name=f"Mutation ({track_label})", showlegend=False,
-                                                legendgroup=f"TF_{tf_nome}",
-                                                customdata=[[tipo_var, mutacao, qualidade, pos_abs, pos_rel, frag_texto, tf_nome, val_5p_raw, intervalo_consenso]],
-                                                hovertemplate=("<b>🧬 %{customdata[0]} (%{customdata[6]}): %{customdata[1]}</b><br><br>"
-                                                               "<b>YEASTRACT Consensus Target (5'):</b> %{customdata[7]}<br>"
-                                                               "<b>Native Site Interval:</b> %{customdata[8]}<br>"
-                                                               "<b>Relative SNP Coordinate:</b> %{customdata[4]} bp<br>"
-                                                               "<b>Absolute Position (VCF):</b> %{customdata[3]}<br>"
-                                                               "<b>TF Track:</b> %{customdata[6]}<br>"
-                                                               "<b>Predicted Regulatory Impact:</b><br>%{customdata[5]}<extra></extra>")
+                                                x=[x_limite_5p, x_limite_3p], y=[i - 0.08, i - 0.08],
+                                                mode="lines", line=dict(color="black", width=1.5, dash="solid"),
+                                                name="Fita Reversa (-)" if st.session_state['lang'] == 'PT' else "Reverse Strand (-)", legendgroup=f"TF_{tf_chave_track}",
+                                                showlegend=False, hoverinfo="skip"
                                             ))
 
-                                fig_regua.add_trace(go.Scatter(
-                                    x=[None], y=[None], mode="markers",
-                                    marker=dict(symbol="circle", size=32, color="#64748b", line=dict(width=1.5, color="white")),
-                                    name="Other Variants", showlegend=True
-                                ))
-                                fig_regua.add_trace(go.Scatter(
-                                    x=[None], y=[None], mode="markers",
-                                    marker=dict(symbol="circle", size=32, color="#10b981", line=dict(width=1.5, color="white")),
-                                    name="Gain of Binding Site", showlegend=True
-                                ))
-                                fig_regua.add_trace(go.Scatter(
-                                    x=[None], y=[None], mode="markers",
-                                    marker=dict(symbol="circle", size=32, color="#dc2626", line=dict(width=1.5, color="white")),
-                                    name="Loss of Binding Site", showlegend=True
-                                ))
-
-                                titulo_x = tr("Coordenadas Relativas ao TSS (bp)", "Relative Coordinates to TSS (bp)")
-                                fig_regua.update_layout(
-                                    plot_bgcolor="white", paper_bgcolor="white", font=dict(color="black", family="Arial, sans-serif"),
-                                    title=dict(text=tr("Mapeamento Físico do Promotor: Sítios Nativos vs Variantes Clínicas", "Physical Mapping of Promoter: Native TF Sites vs. Clinical Variants"), y=0.98, font=dict(color="black", size=18)),
-                                    xaxis=dict(title=titulo_x, title_font=dict(color="black", size=15), title_standoff=25, tickfont=dict(color="black", size=13), showgrid=False, gridcolor="#e2e8f0", zeroline=False, range=[lim_inf_x, lim_sup_x], dtick=100, showline=True, linewidth=1, linecolor='black', mirror=False),
-                                    yaxis=dict(tickmode="array", tickvals=list(range(len(tracks_tfs))), ticktext=tracks_tfs, tickfont=dict(color="black", size=12, family="Arial Black"), showgrid=False, range=[-0.8, len(tracks_tfs) + 0.3], showline=True, linewidth=1, linecolor='black'),
-                                    hovermode="closest", height=max(500, len(tracks_tfs)*70), margin=dict(l=140, r=40, t=70, b=150),
-                                    legend=dict(
-                                        font=dict(color="black", size=14), orientation="h", yanchor="top", y=-0.35, xanchor="center", x=0.5, 
-                                        itemclick="toggle", itemdoubleclick="toggleothers", borderwidth=1, bordercolor="#cbd5e1", 
-                                        bgcolor="rgba(255,255,255,0.9)", traceorder="normal"
-                                    )
-                                )
-                                st.plotly_chart(fig_regua, use_container_width=True, theme=None, config=config_plotly_export, key=f"plot_regua_{idx}")
-
-                    st.markdown("---")
-                    regiao_selecionada = st.selectbox(tr("Selecione a Região Alvo Principal para Inspeção Clínica:", "Select the Main Target Region for Clinical Inspection:"), list(matrizes_completas.keys()))
-
-                    if regiao_selecionada:
-                        df_matriz_atual = matrizes_completas[regiao_selecionada]
-                        df_reg_atual = analise_regulatoria_por_regiao.get(regiao_selecionada, pd.DataFrame())
-                        
-                        if not df_matriz_atual.empty:
-                            classificacao_clinica, mapa_status_paciente = [], {} 
-                            mapa_clinico_sanitizado = {}
-                            if df_clinico_externo is not None and 'id_norm_join' in df_clinico_externo.columns:
-                                for _, idx_row in df_clinico_externo.iterrows():
-                                    chave_s = idx_row['id_norm_join']
-                                    if chave_s: mapa_clinico_sanitizado[chave_s] = idx_row
-
-                            col_diag = tr("Diagnóstico Clínico", "Clinical Diagnosis")
-                            col_iso = tr("Isolado Clínico", "Clinical Isolate")
-                            col_nr_mut = tr("Nr. de Mutações", "No. of Mutations")
-
-                            for _, row_p in df_matriz_atual.iterrows():
-                                paciente = str(row_p['Pacientes']).strip(); paciente_norm = normalizar_id_amostra(paciente)
-                                mic_real, idade_real = 0, np.nan; source_val, gender_val = "N/A", "N/A"
-                                
-                                if df_clinico_externo is not None:
-                                    sub_clinico_row = corresponder_amostra(paciente, mapa_clinico_sanitizado)
-                                    
-                                    if sub_clinico_row is not None:
-                                        mapa_cols_min = {str(c).lower().strip(): c for c in df_clinico_externo.columns}
+                                    for tf_chave, (track_label, track_idx, cor_hex) in mapa_tf_track.items():
+                                        siti_tf = nativos_por_tf.get(tf_chave, [])
+                                        if not siti_tf: continue
                                         
-                                        col_mic = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['fluc', 'fcz', 'fluconazol']) and any(m in min_c for m in ['mic', 'val', '50', 'ug', 'mg', 'ml', 'num'])), None)
-                                        if not col_mic: col_mic = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['fluc', 'fcz', 'fluconazol'])), None)
-                                        if not col_mic: col_mic = next((orig for min_c, orig in mapa_cols_min.items() if 'mic50' in min_c or 'mic' in min_c), None)
-                                        if col_mic and pd.notna(sub_clinico_row[col_mic]): mic_real = sub_clinico_row[col_mic]
-                                        
-                                        col_idade = next((orig for min_c, orig in mapa_cols_min.items() if 'idade' in min_c or 'age' in min_c), None)
-                                        if col_idade and pd.notna(sub_clinico_row[col_idade]):
-                                            try: idade_real = float(sub_clinico_row[col_idade])
-                                            except ValueError: pass
+                                        for m in siti_tf:
+                                            p_min = min(int(m["Pos_5p"]), int(m["Pos_3p"]))
+                                            p_max = max(int(m["Pos_5p"]), int(m["Pos_3p"]))
                                             
-                                        col_source = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['source', 'fonte', 'origem', 'specimen', 'material'])), None)
-                                        if col_source and pd.notna(sub_clinico_row[col_source]): source_val = str(sub_clinico_row[col_source]).strip()
-                                        
-                                        col_gender = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['gender', 'género', 'genero', 'sexo', 'sex'])), None)
-                                        if col_gender and pd.notna(sub_clinico_row[col_gender]): gender_val = str(sub_clinico_row[col_gender]).strip()
+                                            padding_x = 4 
+                                            seletor_largura = p_max - p_min
+                                            if seletor_largura < 28:
+                                                centro = (p_min + p_max) // 2
+                                                x_min_vis = centro - 18
+                                                x_max_vis = centro + 18
+                                            else:
+                                                x_min_vis = p_min - padding_x
+                                                x_max_vis = p_max + padding_x
 
-                                val_mic_num = extrair_valor_mic(mic_real)
-                                status_clinico = "RESISTENTE" if val_mic_num >= limiar_mic else "SUSCETÍVEL"
-                                mapa_status_paciente[paciente] = status_clinico
-                                mutacoes_dict = {col: row_p[col] for col in df_matriz_atual.columns if col != 'Pacientes'}
-                                nr_mutacoes = sum(1 for col_mut, gt_val in mutacoes_dict.items() if str(gt_val).strip() not in ["./.", ".", "N/A", "", "WT"] and not str(gt_val).strip().startswith("0/0"))
-                                
-                                dict_paciente = {
-                                    col_iso: paciente, col_nr_mut: nr_mutacoes, "Source": source_val, "Gender": gender_val,
-                                    tr("Idade", "Age"): idade_real if not pd.isna(idade_real) else "N/A", "MIC50 Fluconazole Real": f"{mic_real} µg/mL" if pd.notna(mic_real) else "0 µg/mL",
-                                    col_diag: "🔴 RESISTENTE" if status_clinico == "RESISTENTE" else "🟢 SUSCETÍVEL", "Valor_MIC_Numerico": val_mic_num, "Idade_Numerica": idade_real
-                                }
-                                dict_paciente.update(mutacoes_dict); classificacao_clinica.append(dict_paciente)
-                                
-                            df_clinico_final = pd.DataFrame(classificacao_clinica)
-                            renderizar_painel_clinico(df_clinico_final, df_clinico_externo, df_matriz_atual, df_reg_atual, [c for c in df_matriz_atual.columns if c != 'Pacientes'], mapa_status_paciente, regiao_selecionada, regioes_promotoras[regiao_selecionada]['strand'], limiar_mic_atual=limiar_mic)
+                                            y0_val = track_idx - 0.40
+                                            y1_val = track_idx + 0.40
+
+                                            poly_x = [x_min_vis, x_max_vis, x_max_vis, x_min_vis, x_min_vis]
+                                            poly_y = [y0_val, y0_val, y1_val, y1_val, y0_val]
+
+                                            fita_raw = str(m.get('Fita', '')).strip()
+                                            is_direta = fita_raw == "+" or "dir" in fita_raw.lower() or "forward" in fita_raw.lower()
+                                            fita_simbolo = "➡️ Direta (+)" if is_direta and st.session_state['lang'] == 'PT' else ("➡️ Forward (+)" if is_direta else ("⬅️ Reversa (-)" if st.session_state['lang'] == 'PT' else "⬅️ Reverse (-)"))
+
+                                            sobrepostos = [
+                                                out for out in siti_tf 
+                                                if max(p_min, min(int(out["Pos_5p"]), int(out["Pos_3p"]))) <= min(p_max, max(int(out["Pos_5p"]), int(out["Pos_3p"])))
+                                            ]
+                                            
+                                            if len(sobrepostos) > 1:
+                                                hover_text = tr(f"<b>🟢 {len(sobrepostos)} Sítios Nativos Sobrepostos ({track_label}):</b><br><br>", f"<b>🟢 {len(sobrepostos)} Overlapping Native Sites ({track_label}):</b><br><br>")
+                                                for sub_i, s in enumerate(sobrepostos, 1):
+                                                    s_min = min(int(s["Pos_5p"]), int(s["Pos_3p"]))
+                                                    s_max = max(int(s["Pos_5p"]), int(s["Pos_3p"]))
+                                                    s_fita = str(s.get('Fita', '')).strip()
+                                                    s_dir = s_fita == "+" or "dir" in s_fita.lower() or "forward" in s_fita.lower()
+                                                    s_simbolo = "➡️ Direta (+)" if s_dir and st.session_state['lang'] == 'PT' else ("➡️ Forward (+)" if s_dir else ("⬅️ Reversa (-)" if st.session_state['lang'] == 'PT' else "⬅️ Reverse (-)"))
+                                                    hover_text += (f"<b>[{sub_i}] {s['FT']} | {s_simbolo}:</b> {s['Consenso_IUPAC']}<br>"
+                                                                   f"Seq FASTA: {s['Sequencia_FASTA']} ({s_min} a {s_max} bp)<br><br>")
+                                                hover_text += tr(f"<b>Coordenada Genómica:</b> {m['Coordenada_YEASTRACT']}<extra></extra>", f"<b>Genomic Coordinate:</b> {m['Coordenada_YEASTRACT']}<extra></extra>")
+                                            else:
+                                                hover_text = (tr(f"<b>🟢 Sítio Nativo YEASTRACT: {track_label}</b><br>", f"<b>🟢 Native YEASTRACT Site: {track_label}</b><br>") +
+                                                              tr(f"<b>Fita Genómica:</b> {fita_simbolo}<br>", f"<b>Genomic Strand:</b> {fita_simbolo}<br>") +
+                                                              f"<b>Consenso IUPAC:</b> {m['Consenso_IUPAC']}<br>"
+                                                              f"<b>Seq FASTA:</b> {m['Sequencia_FASTA']}<br>" +
+                                                              tr(f"<b>Coordenada Real:</b> {p_min} bp a {p_max} bp<br>", f"<b>Real Coordinate:</b> {p_min} bp to {p_max} bp<br>") +
+                                                              tr(f"<b>Coordenada Genómica:</b> {m['Coordenada_YEASTRACT']}<extra></extra>", f"<b>Genomic Coordinate:</b> {m['Coordenada_YEASTRACT']}<extra></extra>"))
+
+                                            fig_regua.add_trace(go.Scatter(
+                                                x=poly_x, y=poly_y,
+                                                mode="lines", fill="toself", fillcolor=cor_hex,
+                                                line=dict(width=1.5, color=cor_hex, dash="solid"),
+                                                name=track_label, legendgroup=f"TF_{tf_chave}",
+                                                showlegend=False, hoveron="fills+points", hovertemplate=hover_text
+                                            ))
+
+                                    if not df_reg.empty:
+                                        posicoes_por_track = {i: [] for i in range(len(tracks_tfs))}
+                                        df_regua_graf = df_reg.copy()
+                                        df_regua_graf["Posição Relativa (TSS)"] = df_regua_graf["Posição Relativa (TSS)"].astype(int)
+
+                                        for idx_v, row_v in df_regua_graf.iterrows():
+                                            pos_rel = int(row_v.get("Posição Relativa (TSS)", 0))
+                                            
+                                            val_5p_raw = row_v.get("Consenso_YEASTRACT_5p", pos_rel)
+                                            try: pos_5p_consenso = int(val_5p_raw)
+                                            except ValueError: pos_5p_consenso = pos_rel
+                                                
+                                            intervalo_consenso = row_v.get("Intervalo_Consenso", f"[{pos_rel}]")
+                                            pos_abs = row_v.get("Posição Absoluta", "N/A")
+                                            tipo_var = row_v.get("Type", "N/A")
+                                            qualidade = row_v.get("QUAL", "N/A")
+                                            mutacao = row_v.get("Mutacao_Exata", "N/A")
+                                            consequencia = str(row_v.get(col_impacto, ""))
+                                            
+                                            tfs_impactados_nesta_var = []
+                                            fragmentos_cons = [f.strip() for f in consequencia.split("||")]
+                                            
+                                            for tf_chave, (track_label, track_idx, cor_hex) in mapa_tf_track.items():
+                                                frag_tf = next((f for f in fragmentos_cons if f"[{tf_chave}]" in f or f"[{tf_chave}p]" in f or f.startswith(f"{tf_chave}:") or f.startswith(f"{tf_chave}p:") or f" {tf_chave} " in f or f" {tf_chave}p " in f), None)
+                                                if frag_tf is not None: tfs_impactados_nesta_var.append((track_label, track_idx, cor_hex, tf_chave, frag_tf))
+                                            
+                                            if not tfs_impactados_nesta_var:
+                                                tfs_impactados_nesta_var.append(("Other Variants", 0, "#64748b", "Other", consequencia))
+                                                
+                                            for track_label, track_idx, cor_hex, tf_nome, frag_texto in tfs_impactados_nesta_var:
+                                                simbolo_marcador = "circle"
+                                                tamanho_marcador = 28
+                                                cor_borda = "white"
+                                                largura_borda = 1.5
+                                                cor_preenchimento = cor_hex
+                                                
+                                                if any(w in frag_texto for w in ["Perda", "Abolição", "Abolicao", "Loss"]): 
+                                                    simbolo_marcador = "circle"
+                                                    tamanho_marcador = 28
+                                                    cor_preenchimento = "#dc2626"
+                                                    cor_borda = "#7f1d1d"
+                                                    largura_borda = 2.0
+                                                elif any(w in frag_texto for w in ["Ganho", "De Novo", "Gain"]): 
+                                                    simbolo_marcador = "circle"
+                                                    tamanho_marcador = 28
+                                                    cor_preenchimento = "#10b981"
+                                                    cor_borda = "#064e3b"
+                                                    largura_borda = 2.0
+                                                
+                                                vizinhos_proximos = sum(1 for pos_ant in posicoes_por_track[track_idx] if abs(pos_5p_consenso - pos_ant) < 18)
+                                                posicoes_por_track[track_idx].append(pos_5p_consenso)
+                                                
+                                                y_calc = track_idx
+                                                if vizinhos_proximos > 0:
+                                                    sinal = 1 if vizinhos_proximos % 2 == 1 else -1
+                                                    passo = ((vizinhos_proximos + 1) // 2) * 0.22
+                                                    y_calc = max(track_idx - 0.38, min(track_idx + 0.38, track_idx + (sinal * passo)))
+                                                
+                                                fig_regua.add_trace(go.Scatter(
+                                                    x=[pos_5p_consenso], y=[y_calc], mode="markers",
+                                                    marker=dict(symbol=simbolo_marcador, size=tamanho_marcador, color=cor_preenchimento, opacity=1.0, line=dict(width=largura_borda, color=cor_borda)),
+                                                    name=f"Mutation ({track_label})", showlegend=False,
+                                                    legendgroup=f"TF_{tf_nome}",
+                                                    customdata=[[tipo_var, mutacao, qualidade, pos_abs, pos_rel, frag_texto, tf_nome, val_5p_raw, intervalo_consenso]],
+                                                    hovertemplate=("<b>🧬 %{customdata[0]} (%{customdata[6]}): %{customdata[1]}</b><br><br>"
+                                                                   "<b>YEASTRACT Consensus Target (5'):</b> %{customdata[7]}<br>"
+                                                                   "<b>Native Site Interval:</b> %{customdata[8]}<br>"
+                                                                   "<b>Relative SNP Coordinate:</b> %{customdata[4]} bp<br>"
+                                                                   "<b>Absolute Position (VCF):</b> %{customdata[3]}<br>"
+                                                                   "<b>TF Track:</b> %{customdata[6]}<br>"
+                                                                   "<b>Predicted Regulatory Impact:</b><br>%{customdata[5]}<extra></extra>")
+                                                ))
+
+                                    fig_regua.add_trace(go.Scatter(
+                                        x=[None], y=[None], mode="markers",
+                                        marker=dict(symbol="circle", size=32, color="#64748b", line=dict(width=1.5, color="white")),
+                                        name="Other Variants", showlegend=True
+                                    ))
+                                    fig_regua.add_trace(go.Scatter(
+                                        x=[None], y=[None], mode="markers",
+                                        marker=dict(symbol="circle", size=32, color="#10b981", line=dict(width=1.5, color="white")),
+                                        name="Gain of Binding Site", showlegend=True
+                                    ))
+                                    fig_regua.add_trace(go.Scatter(
+                                        x=[None], y=[None], mode="markers",
+                                        marker=dict(symbol="circle", size=32, color="#dc2626", line=dict(width=1.5, color="white")),
+                                        name="Loss of Binding Site", showlegend=True
+                                    ))
+
+                                    titulo_x = tr("Coordenadas Relativas ao TSS (bp)", "Relative Coordinates to TSS (bp)")
+                                    fig_regua.update_layout(
+                                        plot_bgcolor="white", paper_bgcolor="white", font=dict(color="black", family="Arial, sans-serif"),
+                                        title=dict(text=tr("Mapeamento Físico do Promotor: Sítios Nativos vs Variantes Clínicas", "Physical Mapping of Promoter: Native TF Sites vs. Clinical Variants"), y=0.98, font=dict(color="black", size=18)),
+                                        xaxis=dict(title=titulo_x, title_font=dict(color="black", size=15), title_standoff=25, tickfont=dict(color="black", size=13), showgrid=False, gridcolor="#e2e8f0", zeroline=False, range=[lim_inf_x, lim_sup_x], dtick=100, showline=True, linewidth=1, linecolor='black', mirror=False),
+                                        yaxis=dict(tickmode="array", tickvals=list(range(len(tracks_tfs))), ticktext=tracks_tfs, tickfont=dict(color="black", size=12, family="Arial Black"), showgrid=False, range=[-0.8, len(tracks_tfs) + 0.3], showline=True, linewidth=1, linecolor='black'),
+                                        hovermode="closest", height=max(500, len(tracks_tfs)*70), margin=dict(l=140, r=40, t=70, b=150),
+                                        legend=dict(
+                                            font=dict(color="black", size=14), orientation="h", yanchor="top", y=-0.35, xanchor="center", x=0.5, 
+                                            itemclick="toggle", itemdoubleclick="toggleothers", borderwidth=1, bordercolor="#cbd5e1", 
+                                            bgcolor="rgba(255,255,255,0.9)", traceorder="normal"
+                                        )
+                                    )
+                                    st.plotly_chart(fig_regua, use_container_width=True, theme=None, config=config_plotly_export, key=f"plot_regua_{idx}")
+
+                        st.markdown("---")
+                        regiao_selecionada = st.selectbox(tr("Selecione a Região Alvo Principal para Inspeção Clínica:", "Select the Main Target Region for Clinical Inspection:"), list(matrizes_completas.keys()))
+
+                        if regiao_selecionada:
+                            df_matriz_atual = matrizes_completas[regiao_selecionada]
+                            df_reg_atual = analise_regulatoria_por_regiao.get(regiao_selecionada, pd.DataFrame())
+                            
+                            if not df_matriz_atual.empty:
+                                classificacao_clinica, mapa_status_paciente = [], {} 
+                                mapa_clinico_sanitizado = {}
+                                if df_clinico_externo is not None and 'id_norm_join' in df_clinico_externo.columns:
+                                    for _, idx_row in df_clinico_externo.iterrows():
+                                        chave_s = idx_row['id_norm_join']
+                                        if chave_s: mapa_clinico_sanitizado[chave_s] = idx_row
+
+                                col_diag = tr("Diagnóstico Clínico", "Clinical Diagnosis")
+                                col_iso = tr("Isolado Clínico", "Clinical Isolate")
+                                col_nr_mut = tr("Nr. de Mutações", "No. of Mutations")
+
+                                for _, row_p in df_matriz_atual.iterrows():
+                                    paciente = str(row_p['Pacientes']).strip(); paciente_norm = normalizar_id_amostra(paciente)
+                                    mic_real, idade_real = 0, np.nan; source_val, gender_val = "N/A", "N/A"
+                                    
+                                    if df_clinico_externo is not None:
+                                        sub_clinico_row = corresponder_amostra(paciente, mapa_clinico_sanitizado)
+                                        
+                                        if sub_clinico_row is not None:
+                                            mapa_cols_min = {str(c).lower().strip(): c for c in df_clinico_externo.columns}
+                                            
+                                            col_mic = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['fluc', 'fcz', 'fluconazol']) and any(m in min_c for m in ['mic', 'val', '50', 'ug', 'mg', 'ml', 'num'])), None)
+                                            if not col_mic: col_mic = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['fluc', 'fcz', 'fluconazol'])), None)
+                                            if not col_mic: col_mic = next((orig for min_c, orig in mapa_cols_min.items() if 'mic50' in min_c or 'mic' in min_c), None)
+                                            if col_mic and pd.notna(sub_clinico_row[col_mic]): mic_real = sub_clinico_row[col_mic]
+                                            
+                                            col_idade = next((orig for min_c, orig in mapa_cols_min.items() if 'idade' in min_c or 'age' in min_c), None)
+                                            if col_idade and pd.notna(sub_clinico_row[col_idade]):
+                                                try: idade_real = float(sub_clinico_row[col_idade])
+                                                except ValueError: pass
+                                                
+                                            col_source = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['source', 'fonte', 'origem', 'specimen', 'material'])), None)
+                                            if col_source and pd.notna(sub_clinico_row[col_source]): source_val = str(sub_clinico_row[col_source]).strip()
+                                            
+                                            col_gender = next((orig for min_c, orig in mapa_cols_min.items() if any(k in min_c for k in ['gender', 'género', 'genero', 'sexo', 'sex'])), None)
+                                            if col_gender and pd.notna(sub_clinico_row[col_gender]): gender_val = str(sub_clinico_row[col_gender]).strip()
+
+                                    val_mic_num = extrair_valor_mic(mic_real)
+                                    status_clinico = "RESISTENTE" if val_mic_num >= limiar_mic else "SUSCETÍVEL"
+                                    mapa_status_paciente[paciente] = status_clinico
+                                    mutacoes_dict = {col: row_p[col] for col in df_matriz_atual.columns if col != 'Pacientes'}
+                                    nr_mutacoes = sum(1 for col_mut, gt_val in mutacoes_dict.items() if str(gt_val).strip() not in ["./.", ".", "N/A", "", "WT"] and not str(gt_val).strip().startswith("0/0"))
+                                    
+                                    dict_paciente = {
+                                        col_iso: paciente, col_nr_mut: nr_mutacoes, "Source": source_val, "Gender": gender_val,
+                                        tr("Idade", "Age"): idade_real if not pd.isna(idade_real) else "N/A", "MIC50 Fluconazole Real": f"{mic_real} µg/mL" if pd.notna(mic_real) else "0 µg/mL",
+                                        col_diag: "🔴 RESISTENTE" if status_clinico == "RESISTENTE" else "🟢 SUSCETÍVEL", "Valor_MIC_Numerico": val_mic_num, "Idade_Numerica": idade_real
+                                    }
+                                    dict_paciente.update(mutacoes_dict); classificacao_clinica.append(dict_paciente)
+                                    
+                                df_clinico_final = pd.DataFrame(classificacao_clinica)
+                                renderizar_painel_clinico(df_clinico_final, df_clinico_externo, df_matriz_atual, df_reg_atual, [c for c in df_matriz_atual.columns if c != 'Pacientes'], mapa_status_paciente, regiao_selecionada, regioes_promotoras[regiao_selecionada]['strand'], limiar_mic_atual=limiar_mic)
 
             except Exception as e: st.error(tr(f"❌ Ocorreu um erro no processamento: {str(e)}", f"❌ Processing error occurred: {str(e)}"))
     else:
-        st.info(tr("⚠️ Carregue os ficheiros GFF e VCF na barra lateral para analisar as variantes clínicas.", "⚠️ Upload GFF and VCF files in the sidebar to analyze clinical variants."))
+        st.info(tr("⚠️ Carregue o ficheiro VCF (e Metadados, se aplicável) na barra lateral para analisar as variantes clínicas. Os ficheiros GFF e FASTA estão a ser lidos automaticamente do repositório.", "⚠️ Upload the VCF file (and Metadata, if applicable) in the sidebar to analyze clinical variants. The GFF and FASTA files are being read automatically from the repository."))
+
 
 # ----------------- ABA 2: NOVA FUNCIONALIDADE DA MATRIZ GLOBAL -----------------
 with aba_matriz_global:
     st.header(tr("🧩 Geração de Matriz Global de Fatores de Transcrição", "🧩 Generation of Global Transcription Factor Matrix"))
-    st.markdown(tr("Esta ferramenta varre todo o genoma de referência para mapear os sítios nativos.", "This tool scans the entire reference genome to map native sites."))
+    st.markdown(tr("Esta ferramenta varre todo o genoma de referência para mapear os sítios nativos lendo diretamente o FASTA e GFF do repositório.", "This tool scans the entire reference genome to map native sites by directly reading the FASTA and GFF from the repository."))
     
     if "matriz_global_processada" not in st.session_state:
         st.session_state.matriz_global_processada = False
     
-    if gff_file and fasta_file:
-        if st.button(tr("🚀 Gerar Matrizes Globais", "🚀 Generate Global Matrices"), type="primary"):
-            st.session_state.matriz_global_processada = True 
+    if st.button(tr("🚀 Gerar Matrizes Globais", "🚀 Generate Global Matrices"), type="primary"):
+        st.session_state.matriz_global_processada = True 
+        
+    if st.session_state.matriz_global_processada: 
+        with st.spinner(tr("A analisar todas as sequências e a agrupar sítios físicos. Isto pode demorar alguns segundos...", "Analyzing all sequences and grouping physical sites. This may take a few seconds...")):
+            caminho_fasta_local = resolver_caminho_fasta(None)
+            gff_bytes = obter_bytes_gff_local()
             
-        if st.session_state.matriz_global_processada: 
-            with st.spinner(tr("A analisar todas as sequências e a agrupar sítios físicos. Isto pode demorar alguns segundos...", "Analyzing all sequences and grouping physical sites. This may take a few seconds...")):
-                caminho_fasta_local = resolver_caminho_fasta(fasta_file)
+            if not gff_bytes:
+                st.error(tr("❌ Erro: Nenhum ficheiro GFF encontrado no repositório.", "❌ Error: No GFF file found in the repository."))
+            else:
                 df_resumo, df_matriz_fts, df_matriz_detalhada = extrair_matrizes_globais(
-                    gff_file.getvalue(), caminho_fasta_local, TAMANHO_PROMOTOR
+                    gff_bytes, caminho_fasta_local, TAMANHO_PROMOTOR
                 )
                 
                 st.success(tr("🎉 Matrizes geradas com sucesso!", "🎉 Matrices generated successfully!"))
@@ -1755,8 +1777,6 @@ with aba_matriz_global:
                     c1.download_button(tr("📥 Descarregar Resumo (CSV)", "📥 Download Summary (CSV)"), data=df_resumo.to_csv(index=False).encode('utf-8'), file_name="Resumo.csv", mime="text/csv")
                     c2.download_button(tr("📥 Descarregar Matriz Agrupada (CSV)", "📥 Download Grouped Matrix (CSV)"), data=df_matriz_fts.to_csv(index=False).encode('utf-8'), file_name="Matriz_Agrupada.csv", mime="text/csv")
                     c3.download_button(tr("📥 Descarregar Matriz Detalhada (CSV)", "📥 Download Detailed Matrix (CSV)"), data=df_matriz_detalhada.to_csv(index=False).encode('utf-8'), file_name="Matriz_Detalhada.csv", mime="text/csv")
-    else:
-        st.warning(tr("⚠️ Para utilizar o gerador de matrizes, precisa de carregar o **Ficheiro GFF** e o **Ficheiro FASTA** na barra lateral.", "⚠️ To use the matrix generator, you need to upload the **GFF File** and the **FASTA File** in the sidebar."))
 
 
 # ----------------- ABA 3: MUTAGÉNESE IN SILICO (VCF VS GENOMA) -----------------
@@ -1767,119 +1787,124 @@ with aba_mutagenese:
     if "mutagenese_processada" not in st.session_state:
         st.session_state.mutagenese_processada = False
     
-    if gff_file and vcf_original_file and fasta_file:
+    if vcf_original_file:
         if st.button(tr("🚀 Iniciar Análise de Mutagénese", "🚀 Start Mutagenesis Analysis"), type="primary"):
             st.session_state.mutagenese_processada = True
             
         if st.session_state.get("mutagenese_processada", False):
             with st.spinner(tr("A cruzar milhares de variantes com o genoma inteiro... (Footprints biológicos em processamento)", "Cross-referencing thousands of variants with the entire genome... (Biological footprints processing)")):
-                caminho_fasta_local = resolver_caminho_fasta(fasta_file)
+                caminho_fasta_local = resolver_caminho_fasta(None)
+                gff_bytes = obter_bytes_gff_local()
                 
-                df_mutagenese, df_extremos, dict_reguloma, amostras_vcf = executar_mutagenese_in_silico(
-                    vcf_original_file.getvalue(), 
-                    gff_file.getvalue(), 
-                    caminho_fasta_local, 
-                    TAMANHO_PROMOTOR
-                )
-                
-                st.session_state.df_mutagenese_cache = df_mutagenese
-                st.session_state.df_extremos_cache = df_extremos
-                st.session_state.dict_reguloma_cache = dict_reguloma
-                st.session_state.amostras_vcf_cache = amostras_vcf
-                
-                if not df_mutagenese.empty:
-                    st.success(tr(f"🎉 Análise concluída com sucesso! Foram detetados {len(df_mutagenese)} eventos de disrupção funcional nos promotores.", f"🎉 Analysis completed successfully! {len(df_mutagenese)} functional disruption events in the promoters were detected."))
-                    
-                    total_perdas = int(df_mutagenese[df_mutagenese["Impacto"] == "🔴 PERDA DE FUNÇÃO"]["Qtd_Sítios_Alterados"].sum())
-                    total_ganhos = int(df_mutagenese[df_mutagenese["Impacto"] == "🟢 GANHO DE FUNÇÃO"]["Qtd_Sítios_Alterados"].sum())
-                    
-                    perdas_totais = df_extremos[df_extremos["Tipo"] == "🚨 PERDA TOTAL"]
-                    ganhos_novo = df_extremos[df_extremos["Tipo"] == "✨ GANHO DE NOVO"]
-                    
-                    st.markdown(tr("### 📊 Resumo de Impactos Regulatórios", "### 📊 Summary of Regulatory Impacts"))
-                    col_m1, col_m2 = st.columns(2)
-                    col_m1.metric(tr("🔴 Sítios Físicos Perdidos (Global)", "🔴 Lost Physical Sites (Global)"), f"{total_perdas}", tr(f"-{len(perdas_totais)} Perdas Totais (Gene-TF-Isolado)", f"-{len(perdas_totais)} Total Losses (Gene-TF-Isolate)"), delta_color="inverse")
-                    col_m2.metric(tr("🟢 Sítios Físicos Ganhos (Global)", "🟢 Gained Physical Sites (Global)"), f"{total_ganhos}", tr(f"+{len(ganhos_novo)} Ganhos De Novo (Gene-TF-Isolado)", f"+{len(ganhos_novo)} De Novo Gains (Gene-TF-Isolate)"), delta_color="normal")
-                    
-                    st.markdown("---")
-                    
-                    st.markdown(tr("#### 🏆 Top 10 Fatores de Transcrição (Eventos Extremos)", "#### 🏆 Top 10 Transcription Factors (Extreme Events)"))
-                    col_chart1, col_chart2 = st.columns(2)
-                    
-                    with col_chart1:
-                        if not perdas_totais.empty:
-                            top_perdas = perdas_totais.groupby('Fator de Transcrição')['Gene_ID'].nunique().reset_index(name='Contagem')
-                            top_perdas = top_perdas.sort_values(by='Contagem', ascending=False).head(10)
-                            fig_p = px.bar(top_perdas, x='Contagem', y='Fator de Transcrição', orientation='h', 
-                                           title=tr('🚨 Top 10: Perdas Totais (Por Gene Afetado)', '🚨 Top 10: Total Losses (Per Affected Gene)'), color_discrete_sequence=['#ef4444'])
-                            fig_p.update_layout(yaxis={'categoryorder':'total ascending'}, height=400, plot_bgcolor="rgba(0,0,0,0)")
-                            st.plotly_chart(fig_p, use_container_width=True, config=config_plotly_export)
-                            
-                    with col_chart2:
-                        if not ganhos_novo.empty:
-                            top_ganhos = ganhos_novo.groupby('Fator de Transcrição')['Gene_ID'].nunique().reset_index(name='Contagem')
-                            top_ganhos = top_ganhos.sort_values(by='Contagem', ascending=False).head(10)
-                            fig_g = px.bar(top_ganhos, x='Contagem', y='Fator de Transcrição', orientation='h', 
-                                           title=tr('✨ Top 10: Ganhos De Novo (Por Gene Afetado)', '✨ Top 10: De Novo Gains (Per Affected Gene)'), color_discrete_sequence=['#10b981'])
-                            fig_g.update_layout(yaxis={'categoryorder':'total ascending'}, height=400, plot_bgcolor="rgba(0,0,0,0)")
-                            st.plotly_chart(fig_g, use_container_width=True, config=config_plotly_export)
-
-                    st.markdown("---")
-                    
-                    st.markdown(tr("### 🔎 Análise de Exclusividade Detalhada (Gene vs Fator de Transcrição)", "### 🔎 Detailed Exclusivity Analysis (Gene vs Transcription Factor)"))
-                    st.markdown(tr(
-                        "Identificação de promotores e as respetivas populações de isolados que sofreram **Perda Total** (tinham sítios físicos e perderam todos) ou **Ganho De Novo** (não tinham nenhum sítio físico e ganharam).",
-                        "Identification of promoters and their respective isolate populations that suffered **Total Loss** (had physical sites and lost all) or **De Novo Gain** (had no physical site and gained)."
-                    ))
-
-                    col_ex1, col_ex2 = st.columns(2)
-                    with col_ex1:
-                        st.error(tr(f"🚨 **Perdas Totais Consolidadas**", f"🚨 **Consolidated Total Losses**"))
-                        if not perdas_totais.empty:
-                            df_pt_show = perdas_totais.groupby(["Gene_ID", "Fator de Transcrição", "Sítios_Ref"]).agg(
-                                Isolados_Afetados=('Isolado', lambda x: ', '.join(sorted(x))),
-                                Qtd_Isolados=('Isolado', 'count')
-                            ).reset_index().sort_values(by="Qtd_Isolados", ascending=False)
-                            df_pt_show = df_pt_show.rename(columns={"Fator de Transcrição": tr("Fator de Transcrição", "Transcription Factor"), "Sítios_Ref": tr("Sítios (Ref)", "Sites (Ref)"), "Isolados_Afetados": tr("Isolados Afetados", "Affected Isolates"), "Qtd_Isolados": tr("Qtd Isolados", "Qty Isolates")})
-                            st.dataframe(df_pt_show, use_container_width=True, hide_index=True)
-                        else:
-                            st.write(tr("Nenhuma perda total detetada.", "No total loss detected."))
-
-                    with col_ex2:
-                        st.success(tr(f"✨ **Ganhos De Novo Consolidados**", f"✨ **Consolidated De Novo Gains**"))
-                        if not ganhos_novo.empty:
-                            df_gn_show = ganhos_novo.groupby(["Gene_ID", "Fator de Transcrição", "Sítios_Mut"]).agg(
-                                Isolados_Afetados=('Isolado', lambda x: ', '.join(sorted(x))),
-                                Qtd_Isolados=('Isolado', 'count')
-                            ).reset_index().sort_values(by="Qtd_Isolados", ascending=False)
-                            df_gn_show = df_gn_show.rename(columns={"Fator de Transcrição": tr("Fator de Transcrição", "Transcription Factor"), "Sítios_Mut": tr("Sítios (Mut)", "Sites (Mut)"), "Isolados_Afetados": tr("Isolados Afetados", "Affected Isolates"), "Qtd_Isolados": tr("Qtd Isolados", "Qty Isolates")})
-                            st.dataframe(df_gn_show, use_container_width=True, hide_index=True)
-                        else:
-                            st.write(tr("Nenhum ganho de novo detetado.", "No de novo gain detected."))
-                    
-                    st.markdown("---")
-                    
-                    st.markdown(tr("### 📋 Tabela Geral de Impactos Regulatórios (Footprints Físicos YEASTRACT)", "### 📋 General Table of Regulatory Impacts (YEASTRACT Physical Footprints)"))
-                    
-                    df_mut_show = df_mutagenese.rename(columns={
-                        "Fator de Transcrição": tr("Fator de Transcrição", "Transcription Factor"),
-                        "Consenso Afetado": tr("Consenso Afetado", "Affected Consensus"),
-                        "Impacto": tr("Impacto", "Impact"),
-                        "Qtd_Sítios_Alterados": tr("Qtd Sítios Alterados", "Qty Altered Sites"),
-                        "Status_Exclusividade": tr("Status Exclusividade", "Exclusivity Status"),
-                        "Posição Absoluta": tr("Posição Absoluta", "Absolute Position"),
-                        "Posição Relativa (TSS)": tr("Posição Relativa (TSS)", "Relative Position (TSS)"),
-                        "Isolados (Perda Total / De Novo)": tr("Isolados (Perda Total / De Novo)", "Isolates (Total Loss / De Novo)"),
-                        "Isolados (Impacto Parcial)": tr("Isolados (Impacto Parcial)", "Isolates (Partial Impact)"),
-                        "Todos Isolados Afetados": tr("Todos Isolados Afetados", "All Affected Isolates")
-                    })
-                    st.dataframe(df_mut_show, use_container_width=True, hide_index=True)
-                    
-                    exibir_botoes_exportacao(df_mut_show, "Impacto_Variantes_Pacientes")
+                if not gff_bytes:
+                    st.error(tr("❌ Erro: Nenhum ficheiro GFF encontrado no repositório.", "❌ Error: No GFF file found in the repository."))
                 else:
-                    st.info(tr("ℹ️ A análise terminou, mas nenhuma variante no VCF fornecido provocou Ganhos ou Perdas de Função nos FTs mapeados.", "ℹ️ Analysis completed, but no variant in the provided VCF caused Gain or Loss of Function in the mapped TFs."))
+                    df_mutagenese, df_extremos, dict_reguloma, amostras_vcf = executar_mutagenese_in_silico(
+                        vcf_original_file.getvalue(), 
+                        gff_bytes, 
+                        caminho_fasta_local, 
+                        TAMANHO_PROMOTOR
+                    )
+                    
+                    st.session_state.df_mutagenese_cache = df_mutagenese
+                    st.session_state.df_extremos_cache = df_extremos
+                    st.session_state.dict_reguloma_cache = dict_reguloma
+                    st.session_state.amostras_vcf_cache = amostras_vcf
+                    
+                    if not df_mutagenese.empty:
+                        st.success(tr(f"🎉 Análise concluída com sucesso! Foram detetados {len(df_mutagenese)} eventos de disrupção funcional nos promotores.", f"🎉 Analysis completed successfully! {len(df_mutagenese)} functional disruption events in the promoters were detected."))
+                        
+                        total_perdas = int(df_mutagenese[df_mutagenese["Impacto"] == "🔴 PERDA DE FUNÇÃO"]["Qtd_Sítios_Alterados"].sum())
+                        total_ganhos = int(df_mutagenese[df_mutagenese["Impacto"] == "🟢 GANHO DE FUNÇÃO"]["Qtd_Sítios_Alterados"].sum())
+                        
+                        perdas_totais = df_extremos[df_extremos["Tipo"] == "🚨 PERDA TOTAL"]
+                        ganhos_novo = df_extremos[df_extremos["Tipo"] == "✨ GANHO DE NOVO"]
+                        
+                        st.markdown(tr("### 📊 Resumo de Impactos Regulatórios", "### 📊 Summary of Regulatory Impacts"))
+                        col_m1, col_m2 = st.columns(2)
+                        col_m1.metric(tr("🔴 Sítios Físicos Perdidos (Global)", "🔴 Lost Physical Sites (Global)"), f"{total_perdas}", tr(f"-{len(perdas_totais)} Perdas Totais (Gene-TF-Isolado)", f"-{len(perdas_totais)} Total Losses (Gene-TF-Isolate)"), delta_color="inverse")
+                        col_m2.metric(tr("🟢 Sítios Físicos Ganhos (Global)", "🟢 Gained Physical Sites (Global)"), f"{total_ganhos}", tr(f"+{len(ganhos_novo)} Ganhos De Novo (Gene-TF-Isolado)", f"+{len(ganhos_novo)} De Novo Gains (Gene-TF-Isolate)"), delta_color="normal")
+                        
+                        st.markdown("---")
+                        
+                        st.markdown(tr("#### 🏆 Top 10 Fatores de Transcrição (Eventos Extremos)", "#### 🏆 Top 10 Transcription Factors (Extreme Events)"))
+                        col_chart1, col_chart2 = st.columns(2)
+                        
+                        with col_chart1:
+                            if not perdas_totais.empty:
+                                top_perdas = perdas_totais.groupby('Fator de Transcrição')['Gene_ID'].nunique().reset_index(name='Contagem')
+                                top_perdas = top_perdas.sort_values(by='Contagem', ascending=False).head(10)
+                                fig_p = px.bar(top_perdas, x='Contagem', y='Fator de Transcrição', orientation='h', 
+                                               title=tr('🚨 Top 10: Perdas Totais (Por Gene Afetado)', '🚨 Top 10: Total Losses (Per Affected Gene)'), color_discrete_sequence=['#ef4444'])
+                                fig_p.update_layout(yaxis={'categoryorder':'total ascending'}, height=400, plot_bgcolor="rgba(0,0,0,0)")
+                                st.plotly_chart(fig_p, use_container_width=True, config=config_plotly_export)
+                                
+                        with col_chart2:
+                            if not ganhos_novo.empty:
+                                top_ganhos = ganhos_novo.groupby('Fator de Transcrição')['Gene_ID'].nunique().reset_index(name='Contagem')
+                                top_ganhos = top_ganhos.sort_values(by='Contagem', ascending=False).head(10)
+                                fig_g = px.bar(top_ganhos, x='Contagem', y='Fator de Transcrição', orientation='h', 
+                                               title=tr('✨ Top 10: Ganhos De Novo (Por Gene Afetado)', '✨ Top 10: De Novo Gains (Per Affected Gene)'), color_discrete_sequence=['#10b981'])
+                                fig_g.update_layout(yaxis={'categoryorder':'total ascending'}, height=400, plot_bgcolor="rgba(0,0,0,0)")
+                                st.plotly_chart(fig_g, use_container_width=True, config=config_plotly_export)
+
+                        st.markdown("---")
+                        
+                        st.markdown(tr("### 🔎 Análise de Exclusividade Detalhada (Gene vs Fator de Transcrição)", "### 🔎 Detailed Exclusivity Analysis (Gene vs Transcription Factor)"))
+                        st.markdown(tr(
+                            "Identificação de promotores e as respetivas populações de isolados que sofreram **Perda Total** (tinham sítios físicos e perderam todos) ou **Ganho De Novo** (não tinham nenhum sítio físico e ganharam).",
+                            "Identification of promoters and their respective isolate populations that suffered **Total Loss** (had physical sites and lost all) or **De Novo Gain** (had no physical site and gained)."
+                        ))
+
+                        col_ex1, col_ex2 = st.columns(2)
+                        with col_ex1:
+                            st.error(tr(f"🚨 **Perdas Totais Consolidadas**", f"🚨 **Consolidated Total Losses**"))
+                            if not perdas_totais.empty:
+                                df_pt_show = perdas_totais.groupby(["Gene_ID", "Fator de Transcrição", "Sítios_Ref"]).agg(
+                                    Isolados_Afetados=('Isolado', lambda x: ', '.join(sorted(x))),
+                                    Qtd_Isolados=('Isolado', 'count')
+                                ).reset_index().sort_values(by="Qtd_Isolados", ascending=False)
+                                df_pt_show = df_pt_show.rename(columns={"Fator de Transcrição": tr("Fator de Transcrição", "Transcription Factor"), "Sítios_Ref": tr("Sítios (Ref)", "Sites (Ref)"), "Isolados_Afetados": tr("Isolados Afetados", "Affected Isolates"), "Qtd_Isolados": tr("Qtd Isolados", "Qty Isolates")})
+                                st.dataframe(df_pt_show, use_container_width=True, hide_index=True)
+                            else:
+                                st.write(tr("Nenhuma perda total detetada.", "No total loss detected."))
+
+                        with col_ex2:
+                            st.success(tr(f"✨ **Ganhos De Novo Consolidados**", f"✨ **Consolidated De Novo Gains**"))
+                            if not ganhos_novo.empty:
+                                df_gn_show = ganhos_novo.groupby(["Gene_ID", "Fator de Transcrição", "Sítios_Mut"]).agg(
+                                    Isolados_Afetados=('Isolado', lambda x: ', '.join(sorted(x))),
+                                    Qtd_Isolados=('Isolado', 'count')
+                                ).reset_index().sort_values(by="Qtd_Isolados", ascending=False)
+                                df_gn_show = df_gn_show.rename(columns={"Fator de Transcrição": tr("Fator de Transcrição", "Transcription Factor"), "Sítios_Mut": tr("Sítios (Mut)", "Sites (Mut)"), "Isolados_Afetados": tr("Isolados Afetados", "Affected Isolates"), "Qtd_Isolados": tr("Qtd Isolados", "Qty Isolates")})
+                                st.dataframe(df_gn_show, use_container_width=True, hide_index=True)
+                            else:
+                                st.write(tr("Nenhum ganho de novo detetado.", "No de novo gain detected."))
+                        
+                        st.markdown("---")
+                        
+                        st.markdown(tr("### 📋 Tabela Geral de Impactos Regulatórios (Footprints Físicos YEASTRACT)", "### 📋 General Table of Regulatory Impacts (YEASTRACT Physical Footprints)"))
+                        
+                        df_mut_show = df_mutagenese.rename(columns={
+                            "Fator de Transcrição": tr("Fator de Transcrição", "Transcription Factor"),
+                            "Consenso Afetado": tr("Consenso Afetado", "Affected Consensus"),
+                            "Impacto": tr("Impacto", "Impact"),
+                            "Qtd_Sítios_Alterados": tr("Qtd Sítios Alterados", "Qty Altered Sites"),
+                            "Status_Exclusividade": tr("Status Exclusividade", "Exclusivity Status"),
+                            "Posição Absoluta": tr("Posição Absoluta", "Absolute Position"),
+                            "Posição Relativa (TSS)": tr("Posição Relativa (TSS)", "Relative Position (TSS)"),
+                            "Isolados (Perda Total / De Novo)": tr("Isolados (Perda Total / De Novo)", "Isolates (Total Loss / De Novo)"),
+                            "Isolados (Impacto Parcial)": tr("Isolados (Impacto Parcial)", "Isolates (Partial Impact)"),
+                            "Todos Isolados Afetados": tr("Todos Isolados Afetados", "All Affected Isolates")
+                        })
+                        st.dataframe(df_mut_show, use_container_width=True, hide_index=True)
+                        
+                        exibir_botoes_exportacao(df_mut_show, "Impacto_Variantes_Pacientes")
+                    else:
+                        st.info(tr("ℹ️ A análise terminou, mas nenhuma variante no VCF fornecido provocou Ganhos ou Perdas de Função nos FTs mapeados.", "ℹ️ Analysis completed, but no variant in the provided VCF caused Gain or Loss of Function in the mapped TFs."))
     else:
-        st.warning(tr("⚠️ Para utilizar a Mutagénese in Silico, é obrigatório carregar os ficheiros **GFF**, **VCF** e **FASTA** na barra lateral.", "⚠️ To use In Silico Mutagenesis, uploading **GFF**, **VCF**, and **FASTA** files in the sidebar is required."))
+        st.warning(tr("⚠️ Para utilizar a Mutagénese in Silico, é obrigatório carregar o ficheiro **VCF** na barra lateral. O GFF e FASTA estão a ser lidos automaticamente do repositório.", "⚠️ To use In Silico Mutagenesis, uploading the **VCF** file in the sidebar is required. GFF and FASTA are being read automatically from the repository."))
+
 
 # ----------------- ABA 4: PAN & CORE REGULOMAS -----------------
 with aba_reguloma:
