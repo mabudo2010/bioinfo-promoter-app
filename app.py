@@ -29,7 +29,38 @@ st.set_page_config(page_title="Bioinfo Promoter Analyzer Pro", layout="wide")
 # ==============================================================================
 # SISTEMA DE AUTENTICAÇÃO / PASSWORD PROTECTION
 # ==============================================================================
+def verificar_password():
+    """Retorna True se o utilizador introduzir a password correta."""
+    def password_inserida():
+        if st.session_state["password"] == "Bioinfo2026": # <-- MUDA A TUA PASSWORD AQUI
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Limpar por segurança
+        else:
+            st.session_state["password_correct"] = False
 
+    if "password_correct" not in st.session_state:
+        st.markdown("<h2 style='text-align: center;'>🔒 Acesso Restrito / Restricted Access</h2>", unsafe_allow_html=True)
+        st.text_input(
+            "Insira a password / Enter password:", 
+            type="password", 
+            on_change=password_inserida, 
+            key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        st.markdown("<h2 style='text-align: center;'>🔒 Acesso Restrito / Restricted Access</h2>", unsafe_allow_html=True)
+        st.text_input(
+            "Insira a password / Enter password:", 
+            type="password", 
+            on_change=password_inserida, 
+            key="password"
+        )
+        st.error("❌ Password incorreta. / Incorrect password.")
+        return False
+    return True
+
+if not verificar_password():
+    st.stop() # Bloqueia a execução do resto do código
 
 # ==============================================================================
 # SISTEMA DE INTERNACIONALIZAÇÃO (i18n)
@@ -114,14 +145,65 @@ def seq_to_regex(seq):
 
 
 # ==============================================================================
+# MAPA UNIVERSAL DE CROMOSSOMAS (C. glabrata / N. glabratus CBS138)
+# ==============================================================================
+MAPA_CROMOSSOMAS = {
+    # 1. GenBank Long-Read Assembly (Xu et al. 2020)
+    "CP048118": "A", "CP048119": "B", "CP048120": "C", "CP048121": "D",
+    "CP048122": "E", "CP048123": "F", "CP048124": "G", "CP048125": "H",
+    "CP048126": "I", "CP048127": "J", "CP048128": "K", "CP048129": "L",
+    "CP048130": "M",
+
+    # 2. NCBI RefSeq (GCF_000002545.3 / ASM254v2)
+    "NC_005967": "A", "NC_005968": "B", "NC_006026": "C", "NC_006027": "D",
+    "NC_006028": "E", "NC_006029": "F", "NC_006030": "G", "NC_006031": "H",
+    "NC_006032": "I", "NC_006033": "J", "NC_006034": "K", "NC_006035": "L",
+    "NC_006036": "M",
+
+    # 3. ENA / EMBL / GenBank Clássico (GCA_000002545.2)
+    "CR380947": "A", "CR380948": "B", "CR380949": "C", "CR380950": "D",
+    "CR380951": "E", "CR380952": "F", "CR380953": "G", "CR380954": "H",
+    "CR380955": "I", "CR380956": "J", "CR380957": "K", "CR380958": "L",
+    "CR380959": "M",
+
+    # 4. Numérico (1 a 13, com ou sem zero à esquerda)
+    "1": "A", "01": "A", "2": "B", "02": "B", "3": "C", "03": "C",
+    "4": "D", "04": "D", "5": "E", "05": "E", "6": "F", "06": "F",
+    "7": "G", "07": "G", "8": "H", "08": "H", "9": "I", "09": "I",
+    "10": "J", "11": "K", "12": "L", "13": "M",
+
+    # 5. Mitocondrial
+    "NC_004691": "MT", "AJ511533": "MT", "MITO": "MT", "MITOCHONDRION": "MT", "MTC": "MT"
+}
+
+# ==============================================================================
 # FUNÇÕES UTILITÁRIAS
 # ==============================================================================
 def normalizar_chrom(chrom_nome):
-    if pd.isna(chrom_nome): return ""
+    if pd.isna(chrom_nome):
+        return ""
+    
     c_str = str(chrom_nome).strip()
-    c_str = c_str.split('_')[0]
-    c_str = re.sub(r'^[Cc]hr', '', c_str)
-    return c_str
+    
+    # 1. Verifica correspondência direta (ignorando versão .1, .2, etc.)
+    c_base = c_str.split('.')[0].upper()
+    if c_base in MAPA_CROMOSSOMAS:
+        return MAPA_CROMOSSOMAS[c_base]
+        
+    # 2. Remove prefixos comuns (Chr, Chromosome_, chr_, etc.)
+    c_limpo = re.sub(r'^(?:chromosome|chrom|chr)[_\-\s]*', '', c_str, flags=re.IGNORECASE)
+    
+    # 3. Verifica novamente após remover prefixos (ex: chr1, ChrNC_005967.2)
+    c_limpo_base = c_limpo.split('.')[0].upper()
+    if c_limpo_base in MAPA_CROMOSSOMAS:
+        return MAPA_CROMOSSOMAS[c_limpo_base]
+        
+    # 4. Formato CGD (ex: ChrA_C_glabrata_CBS138 -> A, mito_C_glabrata_CBS138 -> MT)
+    c_parte = c_limpo.split('_')[0].split('.')[0].upper()
+    if c_parte in MAPA_CROMOSSOMAS:
+        return MAPA_CROMOSSOMAS[c_parte]
+        
+    return c_parte
 
 def normalizar_id_amostra(id_str):
     if pd.isna(id_str): return ""
