@@ -66,15 +66,7 @@ if not verificar_password():
 # SISTEMA DE INTERNACIONALIZAÇÃO (i18n)
 # ==============================================================================
 if 'lang' not in st.session_state:
-    st.session_state['lang'] = 'PT'
-
-# ... [resto do teu código continua igual a partir daqui] ...
-
-# ==============================================================================
-# SISTEMA DE INTERNACIONALIZAÇÃO (i18n)
-# ==============================================================================
-if 'lang' not in st.session_state:
-    st.session_state['lang'] = 'PT'
+    st.session_state['lang'] = 'EN'
 
 def tr(pt, en):
     """Devolve a string em PT ou EN consoante a linguagem selecionada no session_state."""
@@ -88,11 +80,11 @@ def atualizar_idioma():
 # ==============================================================================
 # SELETOR DE LÍNGUA (SIDEBAR)
 # ==============================================================================
-st.sidebar.markdown("### 🌐 Idioma / Language")
+st.sidebar.markdown("### 🌐 Language / Idioma")
 st.sidebar.radio(
-    "Selecione / Select:", 
-    ["🇵🇹 Português", "🇬🇧 English"], 
-    index=0 if st.session_state['lang'] == 'PT' else 1,
+    "Select / Selecione:", 
+    ["🇬🇧 English", "🇵🇹 Português"], 
+    index=0 if st.session_state['lang'] == 'EN' else 1,
     horizontal=True,
     label_visibility="collapsed",
     key="lang_selector",
